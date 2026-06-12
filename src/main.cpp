@@ -9,6 +9,7 @@
 #include "MadgwickFilter.h"
 #include "GaitFSM.h"
 #include "Controller.h"
+#include "MotorController.h"
 
 // Forward declarations 
 // -------------------------------------------------------------------------------------------
@@ -34,6 +35,9 @@ GaitFSM fsm_right("right", 0.01f);
 // direction: flip sign if the motor is mounted inverted on one side
 Controller ctrl_left ("left",  15.0f,  1.0f);
 Controller ctrl_right("right", 15.0f, -1.0f);
+
+// CAN motor controller (CAN1, 1 Mbit/s — XDrive Mini nodes: left=0, right=1)
+MotorController motors(0, 1);
 
 // FSR Objects
 FSR fsr_left_heel ("Left Heel FSR",  LEFT_HEEL_FSR_PIN);
@@ -78,11 +82,10 @@ static void initSDCard() {
 }
 
 // Initiate Motor Driver Objects
-// Teensy 4.1: Serial2 = pins 8 (RX) / 7 (TX) → ODrive Left
-//             Serial3 = pins 15 (RX) / 14 (TX) → ODrive Right
+// CAN1: TX=pin 22, RX=pin 23, via SN65HVD230 transceiver → XDrive Mini nodes (left=0, right=1)
 static void initMotorDriver() {
-    Serial2.begin(115200);
-    Serial3.begin(115200);
+    motors.init(1000000);
+    motors.enable();
 }
 
 //  E-stop ISR 
@@ -110,9 +113,10 @@ static void safetyTask(void* /*pvParams*/) {
             digitalToggle(LED_BUILTIN); 
     }
 
-        // E-stop Check — spin forever sending zero torque, never return from a FreeRTOS task
-        while (estop_triggered) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+        // E-stop Check — disable motors once then spin forever; never return from a FreeRTOS task
+        if (estop_triggered) {
+            motors.disable();
+            for (;;) vTaskDelay(pdMS_TO_TICKS(100));
         }
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1));
@@ -141,10 +145,8 @@ static void controlTask(void* /*pvParams*/) {
         float tau_L = ctrl_left.compute (state_L, phi_L, gain);
         float tau_R = ctrl_right.compute(state_R, phi_R, gain);
 
-        // ODrive ASCII torque TX — stagger L/R by 1 ms to avoid UART contention
-        Serial2.print("c 0 "); Serial2.print(tau_L, 3); Serial2.print("\n");
-        vTaskDelay(pdMS_TO_TICKS(1));
-        Serial3.print("c 0 "); Serial3.print(tau_R, 3); Serial3.print("\n");
+        // CAN torque TX — single frame per axis, no stagger needed
+        motors.setTorque(tau_L, tau_R);
 
         // Expose commands to safetyTask for watchdog clamping
         tau_cmd_L = tau_L;
@@ -192,11 +194,13 @@ static void sensorTask(void* /*pvParams*/) {
         gait_state_right = static_cast<uint8_t>(fsm_right.getState());
         gait_phi_left    = fsm_left.getPhi();
         gait_phi_right   = fsm_right.getPhi();
+        
+        imu_hip.teleplot();
 
         // Serial Monitor (for debugging only)
 
-        imu_hip.printData();
-        madgwick_hip.printData();
+        // imu_hip.printData();
+        // madgwick_hip.printData();
 
         // imu_thigh.printData();
         // madgwick_thigh.printData();

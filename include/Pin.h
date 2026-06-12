@@ -22,4 +22,6 @@ const unsigned int RIGHT_TOE_FSR_PIN  = A4;
 // SD Card Pins
 
 
-// Motor Driver Pins
+// Motor Driver Pins (CAN bus — FlexCAN_T4 CAN1)
+// TX = pin 22, RX = pin 23  (hardware-fixed by Teensy 4.1 CAN1 peripheral)
+// Wire through SN65HVD230 or MCP2562 transceiver to ODrive CANH / CANL.

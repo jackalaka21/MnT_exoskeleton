@@ -29,7 +29,7 @@ public:
     // gain        : runtime assistive-gain scalar (from assistive_gain volatile, 0–1)
     float compute(uint8_t gait_state, float phi, float gain = 1.0f);
 
-    static constexpr float MAX_TORQUE_NM = 15.0f;  // hard clamp applied in compute()
+    static constexpr float MAX_TORQUE_NM = 14.0f;  // hard clamp; firmware TORQUE_OUT_MAX ≈ 14.49 Nm (GEAR_EFF=0.6)
 
     // Serial Monitor (for debugging only)
     void printData(float tau) const;

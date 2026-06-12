@@ -103,3 +103,17 @@ void IMU::printData() {
     Serial.println(_gyroData.z, 2);
 }
 
+void IMU::teleplot() {
+    // Spaces in variable names break Teleplot's parser — replace with underscores
+    String prefix = _sensorName;
+    prefix.replace(' ', '_');
+
+    // Teleplot format: >namespace/variable:value\n
+    Serial.print(">"); Serial.print(prefix); Serial.print("/accel_x:"); Serial.println(_accData.x, 4);
+    Serial.print(">"); Serial.print(prefix); Serial.print("/accel_y:"); Serial.println(_accData.y, 4);
+    Serial.print(">"); Serial.print(prefix); Serial.print("/accel_z:"); Serial.println(_accData.z, 4);
+    Serial.print(">"); Serial.print(prefix); Serial.print("/gyro_x:");  Serial.println(_gyroData.x, 4);
+    Serial.print(">"); Serial.print(prefix); Serial.print("/gyro_y:");  Serial.println(_gyroData.y, 4);
+    Serial.print(">"); Serial.print(prefix); Serial.print("/gyro_z:");  Serial.println(_gyroData.z, 4);
+}
+

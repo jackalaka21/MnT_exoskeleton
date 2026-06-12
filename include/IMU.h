@@ -43,7 +43,8 @@ class IMU {
         void init(); // Initialize the IMU sensor and configure it
         void read(volatile AccelData* accel, volatile GyroData* gyro);  // Read latest sensor data and write directly into the VolatileData.cpp
 
-        // Serial Monitor (for debugging only)
+        // Serial Monitor / Teleplot (for debugging only)
         // --------------------------------------------------------------------------------------------
         void printData();
+        void teleplot(); // Outputs Teleplot-compatible serial lines: >name/var:value|unit
 };
