@@ -9,17 +9,21 @@ volatile bool estop_triggered   = false;
 
 // IMU data
 // --------------------------------------------------------------------------------------------
-// Raw IMU data
-volatile AccelData imu_hip_accel   = {};
-volatile GyroData  imu_hip_gyro    = {};
-volatile AccelData imu_thigh_accel = {};
-volatile GyroData  imu_thigh_gyro  = {};
+// Raw IMU data — two hip IMUs
+volatile AccelData imu_hip1_accel  = {};
+volatile GyroData  imu_hip1_gyro   = {};
+volatile AccelData imu_hip2_accel  = {};
+volatile GyroData  imu_hip2_gyro   = {};
 
-// Filtered IMU data (Madgwick output)
-volatile QuaternionData imu_hip_quaternion   = {1.0f, 0.0f, 0.0f, 0.0f};
-volatile float          imu_hip_flex_angle   = 0.0f;
-volatile QuaternionData imu_thigh_quaternion = {1.0f, 0.0f, 0.0f, 0.0f};
-volatile float          imu_thigh_flex_angle = 0.0f;
+// Filtered IMU data (Madgwick output — per sensor)
+volatile QuaternionData imu_hip1_quaternion = {1.0f, 0.0f, 0.0f, 0.0f};
+volatile float          imu_hip1_angle_y = 0.0f;
+volatile QuaternionData imu_hip2_quaternion = {1.0f, 0.0f, 0.0f, 0.0f};
+volatile float          imu_hip2_angle_y = 0.0f;
+
+// Fused pelvis estimate (average of the two pelvis-mounted IMUs — pelvis pitch, not hip flexion)
+volatile float pelvis_pitch_y      = 0.0f;
+volatile float pelvis_pitch_rate_y = 0.0f;
 
 // FSR data
 // --------------------------------------------------------------------------------------------
@@ -35,20 +39,18 @@ extern volatile bool fsr_left_toe_contact = {};
 extern volatile bool fsr_right_heel_contact = {}; 
 extern volatile bool fsr_right_toe_contact = {}; 
 
-// Gait FSM
+// Gait phase
 // --------------------------------------------------------------------------------------------
-volatile uint8_t gait_state_left  = 0;   // STANCE
-volatile uint8_t gait_state_right = 0;
-volatile float   gait_phi_left    = 0.0f;
-volatile float   gait_phi_right   = 0.0f;
+volatile float   gait_phase_L = 0.0f;
+volatile float   gait_phase_R = 0.0f;
+volatile uint8_t gait_state_L = 0;   // GaitState::STANCE
+volatile uint8_t gait_state_R = 0;
 
 // Motor control
 // --------------------------------------------------------------------------------------------
 volatile float tau_cmd_L = 0.0f;
 volatile float tau_cmd_R = 0.0f;
-
-// Companion link
-// --------------------------------------------------------------------------------------------
-volatile float    assistive_gain    = 0.5f;
-volatile float    stiffness         = 10.0f;
-volatile uint32_t last_companion_ms = 0;
+volatile float motor_angle_L = 0.0f;
+volatile float motor_vel_L   = 0.0f;
+volatile float motor_angle_R = 0.0f;
+volatile float motor_vel_R   = 0.0f;

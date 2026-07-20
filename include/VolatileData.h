@@ -24,13 +24,13 @@ struct GyroData  {
     float z; 
 };
 
-// Raw IMU data
-extern volatile AccelData imu_hip_accel;
-extern volatile GyroData  imu_hip_gyro;
-extern volatile AccelData imu_thigh_accel;
-extern volatile GyroData  imu_thigh_gyro;
+// Raw IMU data — two hip IMUs (redundant, mounted on the hip) for sensor fusion
+extern volatile AccelData imu_hip1_accel;
+extern volatile GyroData  imu_hip1_gyro;
+extern volatile AccelData imu_hip2_accel;
+extern volatile GyroData  imu_hip2_gyro;
 
-// Filtered IMU data (Madgwick output)
+// Filtered IMU data (Madgwick output — per sensor)
 // --------------------------------------------------------------------------------------------
 struct QuaternionData {
     float w;
@@ -39,10 +39,18 @@ struct QuaternionData {
     float z;
 };
 
-extern volatile QuaternionData imu_hip_quaternion;     // orientation quaternion [w, x, y, z]
-extern volatile float          imu_hip_flex_angle;     // sagittal-plane hip flexion, degrees
-extern volatile QuaternionData imu_thigh_quaternion;
-extern volatile float          imu_thigh_flex_angle;   // sagittal-plane thigh flexion, degrees
+extern volatile QuaternionData imu_hip1_quaternion;    // orientation quaternion [w, x, y, z]
+extern volatile float          imu_hip1_angle_y;    // sagittal-plane hip flexion, degrees
+extern volatile QuaternionData imu_hip2_quaternion;
+extern volatile float          imu_hip2_angle_y;    // sagittal-plane hip flexion, degrees
+
+// Fused pelvis estimate — basic sensor fusion (average of the two pelvis-mounted IMUs).
+// NOTE: the IMUs sit on the sacrum/pelvis, so these measure PELVIS pitch in the world frame,
+// NOT hip joint flexion (that is the encoder / motor_angle). Downstream consumers should use
+// these for trunk lean / world reference, and the encoder for the actual hip joint angle.
+// --------------------------------------------------------------------------------------------
+extern volatile float pelvis_pitch_y;      // fused sagittal-plane pelvis pitch, degrees
+extern volatile float pelvis_pitch_rate_y; // fused sagittal-plane pelvis pitch rate, rad/s
 
 // FSR data
 // --------------------------------------------------------------------------------------------
@@ -58,23 +66,21 @@ extern volatile bool fsr_left_toe_contact;
 extern volatile bool fsr_right_heel_contact; 
 extern volatile bool fsr_right_toe_contact;  
 
-// Gait FSM  (written by sensorTask, read by controlTask)
+// Gait phase (written by sensorTask via GaitFSM; read by controlTask / logger / comms)
 // --------------------------------------------------------------------------------------------
-// State: 0=STANCE, 1=PUSH_OFF, 2=SWING  (matches GaitState enum)
-extern volatile uint8_t gait_state_left;
-extern volatile uint8_t gait_state_right;
-// Normalised swing phase [0.0–1.0]; 0 at heel-strike, 1 at end-of-swing.
-// Only meaningful while gait_state_* == SWING.
-extern volatile float gait_phi_left;
-extern volatile float gait_phi_right;
+extern volatile float   gait_phase_L;    // continuous stride phase [0,1], 0 = left heel strike
+extern volatile float   gait_phase_R;    // continuous stride phase [0,1], 0 = right heel strike
+extern volatile uint8_t gait_state_L;    // GaitState enum value (0=STANCE,1=PRE_SWING,2=SWING)
+extern volatile uint8_t gait_state_R;
 
 // Motor control
 // --------------------------------------------------------------------------------------------
-extern volatile float tau_cmd_L;         // written by controlTask, read by safetyTask
-extern volatile float tau_cmd_R;         // written by controlTask, read by safetyTask
+extern volatile float tau_cmd_L;         // Nm at the joint — sent via MotorCAN::setTorqueNm()
+extern volatile float tau_cmd_R;         // Nm at the joint
 
-// Companion link
-// --------------------------------------------------------------------------------------------
-extern volatile float    assistive_gain;    // written by commsTask,   read by controlTask
-extern volatile float    stiffness;         // written by commsTask,   read by controlTask
-extern volatile uint32_t last_companion_ms; // written by commsTask,   read by safetyTask
+// Motor state feedback (written by controlTask; joint side — MotorCAN::read() divides
+// the motor-shaft encoder values by the 15:1 gear ratio)
+extern volatile float motor_angle_L;     // rad, joint side (left XDrive Mini)
+extern volatile float motor_vel_L;       // rad/s, joint side
+extern volatile float motor_angle_R;     // rad, joint side (right XDrive Mini)
+extern volatile float motor_vel_R;       // rad/s, joint side

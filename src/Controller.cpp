@@ -1,32 +1,59 @@
-#include <Arduino.h>
-
 #include "Controller.h"
 
-Controller::Controller(String name, float peak_torque_nm, float direction)
-    : _name(name), _peak_Nm(peak_torque_nm), _dir(direction)
-{}
+#include "Pin.h"
+#include "VolatileData.h"
 
-float Controller::compute(uint8_t gait_state, float phi, float gain) {
-    float tau = 0.0f;
+// Constructor
+// --------------------------------------------------------------------------------------------
+Controller::Controller(MotorCAN& can)
+    : _can(can)
+    , _gait_left("left",  0.01f)
+    , _gait_right("right", 0.01f)
+    , _assist("assist") {}
 
-    if (gait_state == GAIT_SWING) {
-        // Single sine pulse centred on mid-swing.
-        // phi=0 (heel-strike) → tau=0
-        // phi=0.5 (mid-swing) → tau=peak
-        // phi=1.0 (end-swing) → tau=0
-        tau = _peak_Nm * gain * sinf(PI * phi);
-    }
+// Public Methods
+// --------------------------------------------------------------------------------------------
+void Controller::updateGaitPhase() {
+    // FSR-only: heel/toe contact flags drive the estimator (no hip-velocity gate). Each leg gets
+    // its own foot contacts; the phase stays synced to the wearer's cadence.
+    _gait_left.update (fsr_left_heel_contact,  fsr_left_toe_contact);
+    _gait_right.update(fsr_right_heel_contact, fsr_right_toe_contact);
 
-    // Apply motor mounting direction then hard-clamp.
-    tau *= _dir;
-    return constrain(tau, -MAX_TORQUE_NM, MAX_TORQUE_NM);
+    // Publish the gait state for the logger / monitor.
+    gait_phase_L = _gait_left.phase();
+    gait_phase_R = _gait_right.phase();
+    gait_state_L = static_cast<uint8_t>(_gait_left.state());
+    gait_state_R = static_cast<uint8_t>(_gait_right.state());
 }
 
+void Controller::applyAssistiveTorque() {
+    // Drain the shared RX FIFO once, then service both legs from the fresh feedback.
+    _can.poll();
+    if (!_can.armed()) return;
 
-void Controller::printData(float tau) const {
-    Serial.print(_name);
-    Serial.print(" | tau: ");
-    Serial.print(tau, 3);
-    Serial.println(" Nm");
+    _controlLeg(MOTOR_NODE_L, _gait_left,  &motor_angle_L, &motor_vel_L, &tau_cmd_L);
+    _controlLeg(MOTOR_NODE_R, _gait_right, &motor_angle_R, &motor_vel_R, &tau_cmd_R);
 }
 
+// Helper Functions
+// --------------------------------------------------------------------------------------------
+// One leg's torque law — REAL HARDWARE: pure assistive torque tracking the gait phase.
+//   assist — the AssistiveTorque profile maps this leg's gait phase (from its FSR-driven GaitFSM)
+//            to an OpenExo-style flexion/extension torque.
+// No centering spring: on the exo the leg is anchored by gravity and ground reaction, so the bench
+// spring (which held a free arm to a home angle) is gone. The command is clamped to a safety
+// backstop above the profile's own peak (max designed |torque| ≈ 5 Nm, hardware ≈ 27 Nm).
+void Controller::_controlLeg(uint8_t node, GaitFSM& gait,
+                             volatile float* angle, volatile float* velocity, volatile float* tau_cmd) {
+    // Publish latest angle/velocity (poll() already drained the shared RX FIFO this cycle)
+    _can.read(node, angle, velocity);
+
+    // Queue next feedback requests (drive answers by the next cycle)
+    _can.requestAngle(node);
+    _can.requestVelocity(node);
+
+    // Command joint torque in Nm — the assist profile maps the leg's gait phase to a torque,
+    // clamped here and converted to a motor current inside setTorqueNm().
+    *tau_cmd = constrain(_assist.compute(gait.phase(), ASSIST_GAIN), -TAU_MAX_NM, TAU_MAX_NM);
+    _can.setTorqueNm(node, *tau_cmd);
+}

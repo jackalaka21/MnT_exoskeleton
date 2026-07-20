@@ -2,43 +2,52 @@
 
 #include <Arduino.h>
 
-// Torque profile controller — one instance per leg.
-//
-// Profile shape (swing-phase assistance only):
-//
-//   τ(φ) = peak_Nm × gain × sin(π × φ)
-//
-//   φ=0.0  ──── φ=0.5  ──── φ=1.0
-//     0      peak_Nm      0
-//
-// Zero torque is commanded during STANCE and PUSH_OFF states.
-// The profile can be extended to a full lookup table once biomechanics
-// data are available — swap compute() internals without changing the interface.
+#include "MotorCAN.h"
+#include "GaitFSM.h"
+#include "AssistiveTorque.h"
 
+// Assistive gait controller — the exo's control "brain" for both legs.
+//
+// Two responsibilities, called from the two real-time tasks:
+//   • updateGaitPhase()      — turn each foot's FSR contact into a gait phase estimate.
+//   • applyAssistiveTorque() — map that phase to a joint-torque command and send it to each drive.
+//
+// It talks to the rest of the firmware through the shared VolatileData globals: it reads the
+// FSR-contact and motor-feedback globals and writes the gait, motor-state, and torque-command
+// globals — so the tasks in main.cpp stay decoupled from the control maths.
 class Controller {
-public:
-    // name         : label prefix for debug output  (e.g. "left", "right")
-    // peak_torque  : assistive torque amplitude in Nm
-    // direction    : +1.0 if positive motor torque = hip flexion,
-    //                -1.0 if motor is mounted inverted on this side
-    Controller(String name, float peak_torque_nm = 15.0f, float direction = 1.0f);
+    public:
+        // Constructor
+        // ----------------------------------------------------------------------------------------
+        // can : the shared motor CAN bus the controller commands both drives on.
+        Controller(MotorCAN& can);
 
-    // Compute assistive torque command in Nm.
-    // gait_state  : 0=STANCE, 1=PUSH_OFF, 2=SWING  (matches GaitState enum)
-    // phi         : normalised swing phase [0.0–1.0]
-    // gain        : runtime assistive-gain scalar (from assistive_gain volatile, 0–1)
-    float compute(uint8_t gait_state, float phi, float gain = 1.0f);
+        // Public Methods
+        // ----------------------------------------------------------------------------------------
+        // Sensor cycle: advance each leg's gait estimate from its foot-contact flags.
+        void updateGaitPhase();
 
-    static constexpr float MAX_TORQUE_NM = 14.0f;  // hard clamp; firmware TORQUE_OUT_MAX ≈ 14.49 Nm (GEAR_EFF=0.6)
+        // Control cycle: drain the latest motor feedback, then command each leg's assistive
+        // torque (only while the drives are armed).
+        void applyAssistiveTorque();
 
-    // Serial Monitor (for debugging only)
-    void printData(float tau) const;
+    private:
+        // Internal Variables
+        // ----------------------------------------------------------------------------------------
+        MotorCAN&       _can;
+        GaitFSM         _gait_left;    // dt = 0.01 s — must match the sensor task's 100 Hz rate
+        GaitFSM         _gait_right;
+        AssistiveTorque _assist;       // gait phase → joint torque, shared by both legs
 
+        // Helper Functions
+        // ----------------------------------------------------------------------------------------
+        // One leg: read feedback, compute the assist torque for its gait phase, clamp, and send.
+        // Writes the leg's angle/velocity/torque into the shared volatile outputs.
+        void _controlLeg(uint8_t node, GaitFSM& gait,
+                         volatile float* angle, volatile float* velocity, volatile float* tau_cmd);
 
-private:
-    String _name;
-    float  _peak_Nm;
-    float  _dir;
-
-    static constexpr uint8_t GAIT_SWING = 2;  // GaitState::SWING cast to uint8_t
+        // Tuning constants
+        // ----------------------------------------------------------------------------------------
+        static constexpr float ASSIST_GAIN = 1.0f;   // 0..1 master scale — lower for a gentler first run
+        static constexpr float TAU_MAX_NM  = 6.0f;   // safety clamp on commanded joint torque, Nm
 };
