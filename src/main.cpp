@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <FreeRTOS_TEENSY4.h>
 
+#include "Config.h"
 #include "Pin.h"
 #include "VolatileData.h"
 
@@ -21,9 +22,9 @@ void ESTOP_ISR();
 IMU imu_hip1("Hip IMU 1", IMU1_address, I2C_Bus);
 IMU imu_hip2("Hip IMU 2", IMU2_address, I2C_Bus);
 
-// Madgwick Filter Object (β=0.1, 100 Hz — must match sensorTask rate)
-MadgwickFilter madgwick_hip1("hip1", 0.1f, 100.0f);
-MadgwickFilter madgwick_hip2("hip2", 0.1f, 100.0f);
+// Madgwick Filter Object (β and rate from Config; sampleHz must match sensorTask rate)
+MadgwickFilter madgwick_hip1("hip1", Config::Imu::MADGWICK_BETA, Config::Rates::SENSOR_HZ);
+MadgwickFilter madgwick_hip2("hip2", Config::Imu::MADGWICK_BETA, Config::Rates::SENSOR_HZ);
 
 // FSR Objects
 FSR fsr_left_heel ("Left Heel FSR",  LEFT_HEEL_FSR_PIN);

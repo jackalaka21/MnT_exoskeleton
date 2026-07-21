@@ -4,38 +4,44 @@
 
 // Helper Functions
 // --------------------------------------------------------------------------------------------
-// Read Raw Analog Data and normalise to 0–255
+// Read Raw Analog Data, normalise to 0–255 and apply an EMA spike filter
 void FSR::_readRawData() {
-    _value = (uint8_t)(analogRead(_pin) >> 2);
+    float raw = (float)(analogRead(_pin) >> 2);
+
+    // Seed the average on the first read so we don't ramp up from 0.
+    if (!_emaInit) {
+        _ema = raw;
+        _emaInit = true;
+    }
+    else {
+        // ema = alpha * new + (1 - alpha) * ema
+        _ema += _emaAlpha * (raw - _ema);
+    }
+
+    _value = (uint8_t)(_ema + 0.5f);   // round to nearest
 }
 
 // Update Contact State
 void FSR::_updateContactState() {
-    _updateThreshold();
-
-    if (_value > _threshold + 10) {
+    if (_value > _threshold + Config::FSR::HYSTERESIS) {
         _contact = true;
     }
-    else if (_value < _threshold - 10) {
+    else if (_value < _threshold - Config::FSR::HYSTERESIS) {
         _contact = false;
     }
 }
 
-// Update Threshold based on the min and max values
-void FSR::_updateThreshold() {
-    
-    // TODO: Implement a more robust thresholding algorithm that adapts to changing conditions, such as sensor drift or varying contact pressures. For example, you could maintain a rolling average of the sensor readings and set the threshold based on this average plus a fixed offset. This would allow the system to adjust to slow changes in the sensor's baseline reading while still detecting significant increases that indicate contact.
-    // _threshold = (_threshold + _value) / 2;
-}
-
 // Constructor
 // --------------------------------------------------------------------------------------------
-FSR::FSR(String name, int pin) {
+FSR::FSR(String name, int pin, float alpha) {
     _sensorName = name;
     _pin     = pin;
     _value   = 0;
     _contact = false;
-    _threshold = 50; 
+    _threshold = Config::FSR::THRESHOLD;
+    _ema      = 0.0f;
+    _emaAlpha = alpha;
+    _emaInit  = false;
 }
 
 // Public Methods

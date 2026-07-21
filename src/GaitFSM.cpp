@@ -1,5 +1,6 @@
 #include <Arduino.h>
 
+#include "Config.h"
 #include "GaitFSM.h"
 
 // Constructor
@@ -7,7 +8,7 @@
 GaitFSM::GaitFSM(String name, float dt)
     : _name(name)
     , _dt(dt)
-    , _stride_period(NOMINAL_STRIDE_S)
+    , _stride_period(Config::Gait::NOMINAL_STRIDE_S)
 {}
 
 // Helper Functions
@@ -15,9 +16,9 @@ GaitFSM::GaitFSM(String name, float dt)
 void GaitFSM::_closeStride() {
     // Only fold physiologically plausible strides into the estimate; a bounced FSR or a
     // stumble produces an implausibly short/long time that would corrupt the EMA.
-    if (_t_in_stride >= MIN_STRIDE_S && _t_in_stride <= MAX_STRIDE_S) {
-        _stride_period = STRIDE_EMA_ALPHA * _t_in_stride
-                       + (1.0f - STRIDE_EMA_ALPHA) * _stride_period;
+    if (_t_in_stride >= Config::Gait::MIN_STRIDE_S && _t_in_stride <= Config::Gait::MAX_STRIDE_S) {
+        _stride_period = Config::Gait::STRIDE_EMA_ALPHA * _t_in_stride
+                       + (1.0f - Config::Gait::STRIDE_EMA_ALPHA) * _stride_period;
     }
     _t_in_stride = 0.0f;
     _phase       = 0.0f;
@@ -68,31 +69,6 @@ void GaitFSM::update(bool heel_contact, bool toe_contact) {
     _t_in_stride += _dt;
     _phase = _t_in_stride / _stride_period;
     if (_phase > 1.0f) _phase = 1.0f;
-}
-
-// BENCH TESTING ONLY — free-running phase clock, no sensors.
-// --------------------------------------------------------------------------------------------
-void GaitFSM::updateBench() {
-    // Clear one-shot events; re-raised below only on the cycle they occur.
-    _heel_strike = false;
-    _toe_off     = false;
-
-    // Advance the phase clock at a fixed cadence, independent of the arm's angle. The while-wrap
-    // keeps the phase in [0, 1) and stays correct even if BENCH_STRIDE_S is changed at runtime.
-    _stride_period = BENCH_STRIDE_S;
-    _t_in_stride  += _dt;
-    while (_t_in_stride >= _stride_period) {
-        _t_in_stride -= _stride_period;
-        _heel_strike  = true;   // stride boundary → phase wraps back to 0
-    }
-    _phase = _t_in_stride / _stride_period;
-
-    // Coarse display state from the phase so printData() stays meaningful on the bench.
-    GaitState prev = _state;
-    if      (_phase >= BENCH_SWING_PHASE)    _state = GaitState::SWING;
-    else if (_phase >= BENCH_PRESWING_PHASE) _state = GaitState::PRE_SWING;
-    else                                     _state = GaitState::STANCE;
-    if (_state == GaitState::SWING && prev == GaitState::PRE_SWING) _toe_off = true;
 }
 
 // Serial Monitor (for debugging only)

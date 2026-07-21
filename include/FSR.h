@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "Config.h"
 #include "VolatileData.h"
 
 class FSR {
@@ -14,26 +15,30 @@ class FSR {
         uint8_t _threshold;        // Contact threshold (0–255)
 
         // Sensor data
-        uint8_t _value;            // normalised reading (0–255)
+        uint8_t _value;            // EMA-filtered reading (0–255)
         bool    _contact;          // debounced contact state
+
+        // EMA (exponential moving average) spike filter
+        float   _ema;              // running average accumulator (0–255)
+        float   _emaAlpha;         // smoothing factor (0–1); lower = smoother
+        bool    _emaInit;          // seed EMA with first sample
 
 
 
         // Helper Functions
         // --------------------------------------------------------------------------------------------
-        // Read Raw Analog Data and normalise to 0–255
-        void _readRawData(); 
+        // Read Raw Analog Data, normalise to 0–255 and EMA-filter
+        void _readRawData();
 
         // Update Contact State
         void _updateContactState();
-        
-        // Update Threshold based on the min and max values
-        void _updateThreshold();
 
     public:
         // Constructor
         // --------------------------------------------------------------------------------------------
-        FSR(String name, int pin);
+        // alpha: EMA smoothing factor (0–1). Lower filters spikes harder but
+        // adds lag. Defaults to Config::FSR::EMA_ALPHA; override per sensor here.
+        FSR(String name, int pin, float alpha = Config::FSR::EMA_ALPHA);
 
         // Public Methods
         // --------------------------------------------------------------------------------------------

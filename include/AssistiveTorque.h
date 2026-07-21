@@ -39,16 +39,5 @@ class AssistiveTorque {
         // One raised-cosine bump: 1.0 at `center`, tapering to 0 at ±`halfwidth`, 0 elsewhere.
         static float raisedCosBump(float phase, float center, float halfwidth);
 
-        // Tuning constants
-        // ----------------------------------------------------------------------------------------
-        // Profile shape — centres/half-widths are fractions of the stride (0 = heel strike);
-        // magnitudes in Nm. Tune to shape the assistance (OpenExo's extension/flexion magnitude,
-        // percent-gait shift = CENTER, rise time = HALFWIDTH). The bumps don't overlap, so the
-        // peak |torque| is max(EXT_PEAK_NM, FLEX_PEAK_NM).
-        static constexpr float EXT_PEAK_NM    = 4.0f;
-        static constexpr float EXT_CENTER     = 0.30f;   // ~mid-stance
-        static constexpr float EXT_HALFWIDTH  = 0.22f;
-        static constexpr float FLEX_PEAK_NM   = 5.0f;
-        static constexpr float FLEX_CENTER    = 0.65f;   // ~toe-off / early swing
-        static constexpr float FLEX_HALFWIDTH = 0.22f;
+        // Profile shape (peaks/centres/half-widths) lives in Config.h → Config::Assist.
 };

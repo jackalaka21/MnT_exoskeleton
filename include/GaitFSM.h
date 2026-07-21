@@ -47,13 +47,6 @@ class GaitFSM {
         // FSR-only: the foot contact flags are the sole input driving the state machine.
         void update(bool heel_contact, bool toe_contact);
 
-        // BENCH TESTING ONLY — free-running phase clock, no sensors.
-        // The phase marches 0→1 on its own at a fixed cadence (BENCH_STRIDE_S), independent of the
-        // arm's angle, so the assist torque cycles and the arm swings hands-free like a gait cycle.
-        // This is open-loop (it never reads the thing it moves), so unlike the angle-driven version
-        // there is no feedback loop to go unstable. Swap back to update() on the real hardware.
-        void updateBench();
-
         // Continuous gait phase over the full stride: 0.0 at heel strike → 1.0 at the next.
         // This is the primary signal for the assistive controller.
         float phase() const { return _phase; }
@@ -91,22 +84,5 @@ class GaitFSM {
         // Register a completed stride: update the smoothed period and restart the phase clock.
         void _closeStride();
 
-        // Tuning constants
-        // ----------------------------------------------------------------------------------------
-        // Stride period used before the first stride is measured, and the plausibility window
-        // a measured stride must fall inside to be accepted into the EMA (rejects FSR chatter
-        // and stumbles). ~0.5 s ≈ very fast jog, ~2.5 s ≈ slow shuffle.
-        static constexpr float NOMINAL_STRIDE_S = 1.10f;
-        static constexpr float MIN_STRIDE_S     = 0.50f;
-        static constexpr float MAX_STRIDE_S     = 2.50f;
-
-        // EMA weight for the stride-period estimate: higher = adapts faster but noisier.
-        static constexpr float STRIDE_EMA_ALPHA = 0.30f;
-
-        // BENCH TESTING — cadence of the free-running phase clock (see updateBench()).
-        // One full stride every BENCH_STRIDE_S seconds. Keep it slow for a safe first run.
-        static constexpr float BENCH_STRIDE_S = 1.50f;
-        // Phase thresholds that split the stride into the three display states.
-        static constexpr float BENCH_PRESWING_PHASE = 0.60f;   // STANCE → PRE_SWING above this
-        static constexpr float BENCH_SWING_PHASE    = 0.80f;   // PRE_SWING → SWING above this
+        // Tuning constants live in Config.h → Config::Gait (stride window, EMA).
 };

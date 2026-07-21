@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
 
+#include "Config.h"
 #include "VolatileData.h"
 
 // SimpleFOC CANCommander protocol
@@ -49,16 +50,14 @@ namespace SFOCCan {
 // angle/velocity and takes a motor current target. Conversions:
 //   joint angle  = motor angle  / GEAR_RATIO
 //   joint torque = current × NM_PER_AMP   (measured, ≈ 3.9 Nm per amp)
+// Values are defined in Config.h → Config::Motor (edit them there). These aliases keep the
+// XDrive::NAME spelling used throughout MotorCAN.cpp while Config stays the single source of truth.
 namespace XDrive {
-    constexpr float KT         = 0.23f;   // nameplate motor torque constant, Nm/A — reference only
-    constexpr float GEAR_RATIO = 15.0f;   // gearbox reduction
-    constexpr float GEAR_EFF   = 0.6f;    // gearbox efficiency estimate — reference only
-    constexpr float I_MAX      = 7.0f;    // drive current limit, A (≈ 27.5 Nm at the joint)
-
-    // Measured 2026-07-09 with the drive's current scale verified (DRV8301 gain-80 read-back OK):
-    // 1.0 Nm commanded through the old estimate KT×RATIO×EFF (2.07 Nm/A) produced 1.9 Nm at the
-    // joint, so the true scale is 2.07 × 1.9. Re-measure if the motor or gearbox changes.
-    constexpr float NM_PER_AMP = 3.93f;
+    constexpr float KT         = Config::Motor::KT;
+    constexpr float GEAR_RATIO = Config::Motor::GEAR_RATIO;
+    constexpr float GEAR_EFF   = Config::Motor::GEAR_EFF;
+    constexpr float I_MAX      = Config::Motor::I_MAX;
+    constexpr float NM_PER_AMP = Config::Motor::NM_PER_AMP;
 }
 
 // MotorCAN — Teensy-side master for SimpleFOC drives on CAN2 (TX=D1/pin1, RX=D0/pin0)

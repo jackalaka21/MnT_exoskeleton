@@ -1,3 +1,4 @@
+#include "Config.h"
 #include "AssistiveTorque.h"
 
 // Constructor
@@ -19,8 +20,8 @@ float AssistiveTorque::raisedCosBump(float phase, float center, float halfwidth)
 // Public Methods
 // --------------------------------------------------------------------------------------------
 float AssistiveTorque::compute(float phase, float gain) const {
-    float flex = FLEX_PEAK_NM * raisedCosBump(phase, FLEX_CENTER, FLEX_HALFWIDTH);
-    float ext  = EXT_PEAK_NM  * raisedCosBump(phase, EXT_CENTER,  EXT_HALFWIDTH);
+    float flex = Config::Assist::FLEX_PEAK_NM * raisedCosBump(phase, Config::Assist::FLEX_CENTER, Config::Assist::FLEX_HALFWIDTH);
+    float ext  = Config::Assist::EXT_PEAK_NM  * raisedCosBump(phase, Config::Assist::EXT_CENTER,  Config::Assist::EXT_HALFWIDTH);
     return gain * (flex - ext);           // + = flexion assist, − = extension assist
 }
 

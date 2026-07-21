@@ -46,8 +46,5 @@ class Controller {
         void _controlLeg(uint8_t node, GaitFSM& gait,
                          volatile float* angle, volatile float* velocity, volatile float* tau_cmd);
 
-        // Tuning constants
-        // ----------------------------------------------------------------------------------------
-        static constexpr float ASSIST_GAIN = 1.0f;   // 0..1 master scale — lower for a gentler first run
-        static constexpr float TAU_MAX_NM  = 6.0f;   // safety clamp on commanded joint torque, Nm
+        // Tuning constants (assist gain, torque clamp) live in Config.h → Config::Assist.
 };

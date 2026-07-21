@@ -1,5 +1,6 @@
 #include "Controller.h"
 
+#include "Config.h"
 #include "Pin.h"
 #include "VolatileData.h"
 
@@ -7,8 +8,8 @@
 // --------------------------------------------------------------------------------------------
 Controller::Controller(MotorCAN& can)
     : _can(can)
-    , _gait_left("left",  0.01f)
-    , _gait_right("right", 0.01f)
+    , _gait_left("left",  Config::Rates::SENSOR_DT)
+    , _gait_right("right", Config::Rates::SENSOR_DT)
     , _assist("assist") {}
 
 // Public Methods
@@ -54,6 +55,7 @@ void Controller::_controlLeg(uint8_t node, GaitFSM& gait,
 
     // Command joint torque in Nm — the assist profile maps the leg's gait phase to a torque,
     // clamped here and converted to a motor current inside setTorqueNm().
-    *tau_cmd = constrain(_assist.compute(gait.phase(), ASSIST_GAIN), -TAU_MAX_NM, TAU_MAX_NM);
+    *tau_cmd = constrain(_assist.compute(gait.phase(), Config::Assist::GAIN),
+                         -Config::Assist::TAU_MAX_NM, Config::Assist::TAU_MAX_NM);
     _can.setTorqueNm(node, *tau_cmd);
 }
