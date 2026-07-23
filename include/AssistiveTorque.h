@@ -4,10 +4,10 @@
 
 // Assistive hip torque profile — decoupled from gait estimation.
 //
-// OpenExo-style shape: two smooth (raised-cosine) bumps over the gait phase [0, 1]:
-//   • EXTENSION assist bump during stance            → negative torque
-//   • FLEXION  assist bump around toe-off/early swing → positive torque
-// Sign convention: + = flexion assist, − = extension assist.
+// The torque curve is a periodic Catmull-Rom spline drawn smoothly THROUGH a table of
+// {phase, torque} control points (Config::Assist::TORQUE_POINTS): extension assist (negative)
+// during stance, flexion assist (positive) around toe-off/early swing. Sign convention:
+// + = flexion assist, − = extension assist.
 //
 // Takes the gait phase (e.g. from GaitFSM::phase()) and returns joint torque in Nm, so the
 // profile is a pure function of phase — independent of how that phase was estimated. This keeps
@@ -36,8 +36,9 @@ class AssistiveTorque {
 
         // Helper Functions
         // ----------------------------------------------------------------------------------------
-        // One raised-cosine bump: 1.0 at `center`, tapering to 0 at ±`halfwidth`, 0 elsewhere.
-        static float raisedCosBump(float phase, float center, float halfwidth);
+        // Evaluate the periodic Catmull-Rom spline through Config::Assist::TORQUE_POINTS at the
+        // given stride phase. Returns the raw (un-gained) torque in Nm.
+        static float splineTorque(float phase);
 
-        // Profile shape (peaks/centres/half-widths) lives in Config.h → Config::Assist.
+        // Profile shape (the control-point table) lives in Config.h → Config::Assist.
 };

@@ -53,9 +53,12 @@ void Controller::_controlLeg(uint8_t node, GaitFSM& gait,
     _can.requestAngle(node);
     _can.requestVelocity(node);
 
-    // Command joint torque in Nm — the assist profile maps the leg's gait phase to a torque,
-    // clamped here and converted to a motor current inside setTorqueNm().
-    *tau_cmd = constrain(_assist.compute(gait.phase(), Config::Assist::GAIN),
-                         -Config::Assist::TAU_MAX_NM, Config::Assist::TAU_MAX_NM);
+    // Feedforward assist from the gait phase, clamped to the safety backstop. Assumes uniform
+    // walking, so the phase-based profile is commanded directly (no velocity intent guard).
+    float tau = constrain(_assist.compute(gait.phase(), Config::Assist::GAIN),
+                          -Config::Assist::TAU_MAX_NM, Config::Assist::TAU_MAX_NM);
+
+    // Command joint torque in Nm — converted to a motor current inside setTorqueNm().
+    *tau_cmd = tau;
     _can.setTorqueNm(node, *tau_cmd);
 }

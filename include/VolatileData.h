@@ -10,6 +10,10 @@
 // --------------------------------------------------------------------------------------------
 extern volatile bool estop_triggered;   // written by GPIO ISR,    read by safetyTask
 
+// Fall detection
+// --------------------------------------------------------------------------------------------
+extern volatile bool fall_detected;     // written by sensorTask (FallDetector), read by safetyTask
+
 // IMU data 
 // Struct types for shared IMU data
 // --------------------------------------------------------------------------------------------
@@ -70,7 +74,7 @@ extern volatile bool fsr_right_toe_contact;
 // --------------------------------------------------------------------------------------------
 extern volatile float   gait_phase_L;    // continuous stride phase [0,1], 0 = left heel strike
 extern volatile float   gait_phase_R;    // continuous stride phase [0,1], 0 = right heel strike
-extern volatile uint8_t gait_state_L;    // GaitState enum value (0=STANCE,1=PRE_SWING,2=SWING)
+extern volatile uint8_t gait_state_L;    // GaitState (0=LOADING,1=MID_STANCE,2=TERMINAL_STANCE,3=SWING)
 extern volatile uint8_t gait_state_R;
 
 // Motor control

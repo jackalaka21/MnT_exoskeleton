@@ -31,37 +31,26 @@ void GaitFSM::update(bool heel_contact, bool toe_contact) {
     _heel_strike = false;
     _toe_off     = false;
 
-    switch (_state) {
+    // Decode the foot-contact combination directly into the gait phase. The two FSRs give four
+    // (heel, toe) combinations, one per canonical phase — no path/history dependence needed.
+    GaitState next;
+    if      ( heel_contact && !toe_contact) next = GaitState::LOADING;          // (1,0)
+    else if ( heel_contact &&  toe_contact) next = GaitState::MID_STANCE;       // (1,1)
+    else if (!heel_contact &&  toe_contact) next = GaitState::TERMINAL_STANCE;  // (0,1)
+    else                                    next = GaitState::SWING;            // (0,0)
 
-        case GaitState::STANCE:
-            // Heel lifts while the toe stays loaded → push-off. FSR-only: no hip-velocity gate.
-            if (!heel_contact && toe_contact) {
-                _state = GaitState::PRE_SWING;
-            }
-            break;
-
-        case GaitState::PRE_SWING:
-            // Both sensors clear → foot has left the ground, swing begins.
-            if (!heel_contact && !toe_contact) {
-                _state   = GaitState::SWING;
-                _toe_off = true;
-                break;
-            }
-            // Heel came back down (aborted step / weight shift) → back to stance.
-            if (heel_contact) {
-                _state = GaitState::STANCE;
-            }
-            break;
-
-        case GaitState::SWING:
-            // Heel strike ends the stride: this is the phase-0 reference event.
-            if (heel_contact) {
-                _state       = GaitState::STANCE;
-                _heel_strike = true;
-                _closeStride();   // measures the stride just completed, resets the phase clock
-            }
-            break;
+    // Edge events are defined by entering/leaving SWING (the airborne phase):
+    //   • initial ground contact after swing → HEEL STRIKE: the phase-0 reference; close the stride.
+    //   • foot leaving the ground            → TOE OFF: the foot has gone airborne.
+    if (_state == GaitState::SWING && next != GaitState::SWING) {
+        _heel_strike = true;
+        _closeStride();   // measures the stride just completed, resets the phase clock
     }
+    else if (_state != GaitState::SWING && next == GaitState::SWING) {
+        _toe_off = true;
+    }
+
+    _state = next;
 
     // Advance the phase clock every cycle and normalise against the current stride estimate.
     // Held at 1.0 if the stride overruns the estimate (e.g. a pause mid-step) rather than
@@ -74,7 +63,7 @@ void GaitFSM::update(bool heel_contact, bool toe_contact) {
 // Serial Monitor (for debugging only)
 // --------------------------------------------------------------------------------------------
 void GaitFSM::printData() {
-    static const char* const STATE_NAMES[] = { "STANCE", "PRE_SWING", "SWING" };
+    static const char* const STATE_NAMES[] = { "LOADING", "MID_STANCE", "TERMINAL_STANCE", "SWING" };
 
     Serial.print(_name);
     Serial.print(" | state: ");   Serial.print(STATE_NAMES[static_cast<uint8_t>(_state)]);

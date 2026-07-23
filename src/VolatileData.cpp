@@ -7,6 +7,10 @@
 // --------------------------------------------------------------------------------------------
 volatile bool estop_triggered   = false;
 
+// Fall detection
+// --------------------------------------------------------------------------------------------
+volatile bool fall_detected     = false;
+
 // IMU data
 // --------------------------------------------------------------------------------------------
 // Raw IMU data — two hip IMUs
@@ -43,8 +47,8 @@ extern volatile bool fsr_right_toe_contact = {};
 // --------------------------------------------------------------------------------------------
 volatile float   gait_phase_L = 0.0f;
 volatile float   gait_phase_R = 0.0f;
-volatile uint8_t gait_state_L = 0;   // GaitState::STANCE
-volatile uint8_t gait_state_R = 0;
+volatile uint8_t gait_state_L = 1;   // GaitState::MID_STANCE
+volatile uint8_t gait_state_R = 1;
 
 // Motor control
 // --------------------------------------------------------------------------------------------

@@ -10,6 +10,7 @@
 #include "MadgwickFilter.h"
 #include "MotorCAN.h"
 #include "Controller.h"
+#include "FallDetector.h"
 
 // Forward declarations 
 // -------------------------------------------------------------------------------------------
@@ -37,6 +38,9 @@ MotorCAN motor_can("Motor CAN", MOTOR_NODE_L, MOTOR_NODE_R);
 
 // Assistive gait controller — owns the per-leg gait estimation and torque command
 Controller controller(motor_can);
+
+// Fall detector — watches the fused pelvis pitch for a sudden topple / large tilt
+FallDetector fall_detector(Config::Rates::SENSOR_DT);
 
 // Handle so safetyTask can suspend the control loop before disabling the motors
 static TaskHandle_t control_task_handle = nullptr;
@@ -92,6 +96,18 @@ void ESTOP_ISR() {
 //  Clamp and estop check.
 //  Preempts all other tasks within next 1 ms tick.
 // ──────────────────────────────────────────────
+// Drop the exo into its safe state and stay there. Stops the control loop first so it can't
+// send another torque command, then disables the drives. Never returns — a FreeRTOS task must
+// not fall off the end, so it spins with a fast LED blink to flag the fault.
+static void enterSafeState() {
+    if (control_task_handle != nullptr) vTaskSuspend(control_task_handle);
+    motor_can.disableAll();
+    for (;;) {
+        digitalToggle(LED_BUILTIN);        // fast blink = latched fault (E-stop or fall)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 static void safetyTask(void* /*pvParams*/) {
     TickType_t last_wake = xTaskGetTickCount();
     uint16_t led_timer = 0;
@@ -99,18 +115,16 @@ static void safetyTask(void* /*pvParams*/) {
     for (;;) {
         // LED heartbeat — 1 Hz toggle so we can confirm the scheduler is running
         // independently of Serial. Visible immediately if safetyTask dispatches.
-        if (++led_timer >= 500) { 
-            led_timer = 0; 
-            digitalToggle(LED_BUILTIN); 
+        if (++led_timer >= 500) {
+            led_timer = 0;
+            digitalToggle(LED_BUILTIN);
     }
 
-        // E-stop Check — spin forever; never return from a FreeRTOS task
-        if (estop_triggered) {
-            // Stop the control loop first so it can't send another torque command,
-            // then zero the target and disable the drives.
-            if (control_task_handle != nullptr) vTaskSuspend(control_task_handle);
-            motor_can.disableAll();
-            for (;;) vTaskDelay(pdMS_TO_TICKS(100));
+        // Safe-state triggers — E-stop button or a detected fall. Either one latches the exo
+        // into the safe state (enterSafeState never returns), so the control loop is stopped and
+        // the drives disabled until the device is power-cycled.
+        if (estop_triggered || fall_detected) {
+            enterSafeState();
         }
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1));
@@ -154,6 +168,10 @@ static void sensorTask(void* /*pvParams*/) {
         pelvis_pitch_y      = 0.5f * (imu_hip1_angle_y + imu_hip2_angle_y);
         pelvis_pitch_rate_y = 0.5f * (imu_hip1_gyro.y  + imu_hip2_gyro.y);
 
+        // Fall detection — a sudden large change in the fused pelvis pitch latches fall_detected,
+        // which safetyTask turns into a safe-state shutdown on its next 1 ms tick.
+        if (fall_detector.update(pelvis_pitch_y)) fall_detected = true;
+
         // FSRs
         fsr_left_heel.read(&fsr_left_heel_value, &fsr_left_heel_contact);
         fsr_left_toe.read(&fsr_left_toe_value, &fsr_left_toe_contact);
@@ -180,7 +198,7 @@ static void printLeg(const char* label, uint8_t gait_state, float phase,
                      uint8_t heel_val, bool heel_contact,
                      uint8_t toe_val,  bool toe_contact) {
     // Padded to a fixed width so the columns line up between the LEFT and RIGHT lines.
-    static const char* const GAIT_NAMES[] = { "STANCE  ", "PRESWING", "SWING   " };
+    static const char* const GAIT_NAMES[] = { "LOADING   ", "MIDSTANCE ", "TERMSTANCE", "SWING     " };
 
     Serial.print(label);
     Serial.print(" | Gait ");   Serial.print(GAIT_NAMES[gait_state]);
@@ -207,7 +225,7 @@ static void monitorTask(void* /*pvParams*/) {
         Serial.print(" deg  hip2 ");     Serial.print(imu_hip2_angle_y, 1);
         Serial.print(" deg | pelvis ");  Serial.print(pelvis_pitch_y, 1);
         Serial.print(" deg  rate ");     Serial.print(pelvis_pitch_rate_y, 2);
-        Serial.println(" rad/s");
+        Serial.print(" rad/s | FALL ");  Serial.println(fall_detected ? "1" : "0");
 
         // One chunk per leg, aligned for easy left/right comparison
         printLeg("LEFT ", gait_state_L, gait_phase_L, motor_angle_L, motor_vel_L, tau_cmd_L,
