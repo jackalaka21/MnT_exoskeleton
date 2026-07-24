@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "Config.h"
+
 // Gait phase estimator — one instance per leg.
 //
 // Produces two outputs every sensor cycle:
@@ -54,6 +56,15 @@ class GaitFSM {
 
         GaitState state() const { return _state; }
 
+        // Estimated progress through the CURRENT swing, from cadence: time since toe-off divided by
+        // the expected swing duration (SWING_FRACTION × measured stride). ~0 just after toe-off,
+        // ~0.5–0.6 near peak-flexion reversal, →1.0 at the estimated heel strike. Only meaningful
+        // while state() == SWING; the FSRs are blind mid-air, so this timer is the only swing signal.
+        float swingProgress() const {
+            float expected = Config::Gait::SWING_FRACTION * _stride_period;
+            return (expected > 1e-3f) ? (_t_in_swing / expected) : 0.0f;
+        }
+
         // Measured stride period in seconds (EMA-smoothed). Falls back to NOMINAL_STRIDE_S
         // until the first full stride has been observed.
         float stridePeriod() const { return _stride_period; }
@@ -61,6 +72,25 @@ class GaitFSM {
         // Edge events — true for exactly one cycle after they occur.
         bool heelStrike() const { return _heel_strike; }   // SWING → stance (initial contact)
         bool toeOff()     const { return _toe_off; }        // stance → SWING (foot airborne)
+
+        // Gait sync — true only while the state sequence looks like a real stride. It is SET by a
+        // plausible heel-first initial contact (SWING → LOADING / MID_STANCE) and CLEARED by a
+        // sensor-fault signature: reaching TERMINAL_STANCE (which drives the largest push-off
+        // torque) any way other than through MID_STANCE — e.g. a toe-only contact appearing from
+        // mid-air (false toe FSR). SAFETY: the controller must withhold assist while this is false,
+        // so a faulty FSR cannot command an unexpected torque. Starts false (no assist until a real
+        // heel strike is seen), and re-arms on the next clean heel strike.
+        bool synced() const { return _synced; }
+
+        // Activity watchdog. True only while gait edge events keep arriving; goes false once no
+        // heel strike / toe off has occurred for IDLE_TIMEOUT_STRIDES × the measured stride period
+        // — i.e. the wearer has stopped walking, the foot is off the ground, or the FSRs never fire
+        // (bench). Scaling by the stride keeps the cutoff quick at normal cadence without tripping a
+        // slow walker. SAFETY-CRITICAL: the controller must command ZERO assist whenever this is
+        // false, else the free-running phase clock keeps issuing torque and spins an unloaded joint.
+        bool walking() const {
+            return _t_since_event < Config::Gait::IDLE_TIMEOUT_STRIDES * _stride_period;
+        }
 
         // Serial Monitor (for debugging only)
         // ----------------------------------------------------------------------------------------
@@ -75,10 +105,15 @@ class GaitFSM {
         GaitState _state         = GaitState::MID_STANCE;   // both FSRs loaded — safe standing default
         float     _phase         = 0.0f;    // [0, 1] over the stride
         float     _t_in_stride   = 0.0f;    // seconds elapsed since the last heel strike
+        float     _t_in_swing    = 0.0f;    // seconds elapsed since the last toe-off (swing timer)
+        float     _t_since_event = 1e6f;    // seconds since the last edge event (starts "idle")
         float     _stride_period = 0.0f;    // EMA-smoothed stride time, seconds
 
         bool      _heel_strike   = false;   // one-cycle event flags
         bool      _toe_off       = false;
+        bool      _primed        = false;   // false until the first update() adopts the real
+                                            // contact state (suppresses a phantom boot edge event)
+        bool      _synced        = false;   // false until a plausible heel strike; gates assist
 
         // Helper Functions
         // ----------------------------------------------------------------------------------------

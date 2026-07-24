@@ -42,8 +42,17 @@ namespace Config {
         constexpr float   EMA_ALPHA = 0.2f;
         // Contact detection: contact asserts above THRESHOLD+HYSTERESIS and
         // clears below THRESHOLD-HYSTERESIS (deadband stops chatter at the edge).
-        constexpr uint8_t THRESHOLD  = 50;   // 0–255
-        constexpr uint8_t HYSTERESIS = 10;   // 0–255
+        // Per-sensor threshold — LOWER = MORE SENSITIVE (triggers with less force).
+        // The forefoot (toe) sits lower so it picks up the lighter push-off load.
+        // Keep any threshold above HYSTERESIS so THRESHOLD−HYSTERESIS can't underflow.
+        constexpr uint8_t THRESHOLD     = 100;   // 0–255 — default / heel
+        constexpr uint8_t TOE_THRESHOLD = 25;   // 0–255 — forefoot (more sensitive)
+        constexpr uint8_t HYSTERESIS    = 10;   // 0–255
+
+        // Debounce: a new contact state must persist this many consecutive samples before it is
+        // adopted, so a single-cycle spike (false trigger) or dropout (missed trigger) can't flip
+        // the contact flag. At 100 Hz, 3 samples = 30 ms — negligible gait lag, big noise rejection.
+        constexpr uint8_t DEBOUNCE_SAMPLES = 3;
     }
 
     // ------------------------------------------------------------------------
@@ -60,60 +69,80 @@ namespace Config {
 
         // EMA weight for the stride-period estimate: higher = adapts faster but noisier.
         constexpr float STRIDE_EMA_ALPHA = 0.30f;
+
+        // Swing occupies roughly this fraction of the stride (toe-off → next heel strike). Used to
+        // turn "time since toe-off" into a swing-progress estimate for the cadence-timed push-down,
+        // since the FSRs give no information while the foot is airborne. ~0.40 is typical walking.
+        constexpr float SWING_FRACTION = 0.40f;
+
+        // Activity watchdog: if no gait edge event (heel strike / toe off) arrives for this many
+        // stride periods, GaitFSM::walking() goes false and the controller commands ZERO assist.
+        // Scaling by the MEASURED stride (instead of a fixed timeout) keeps the cutoff snappy at
+        // normal cadence yet still tolerant of a slow shuffle. The longest legitimate gap between
+        // edge events is ~0.6 stride (the stance interval), so this must stay above ~0.6 — 1.25
+        // leaves margin while cutting assist within ~1 stride of the wearer stopping. Lower it for
+        // a faster cutoff, but not below ~0.7 or slow walking will false-trip mid-stance.
+        constexpr float IDLE_TIMEOUT_STRIDES = 1.25f;
     }
 
     // ------------------------------------------------------------------------
-    //  Assistive torque profile — Catmull-Rom spline over the stride [0,1]
+    //  Assistive torque — CONTACT-DRIVEN: one torque target per gait state
     // ------------------------------------------------------------------------
-    // Control points hold the BIOLOGICAL level-ground hip-torque ground truth
-    // (Camargo et al. "MODE" dataset, red Ground-Truth trace), in Nm per kg body
-    // mass. A periodic Catmull-Rom spline is drawn smoothly THROUGH every point;
-    // it is converted to a joint-torque command in AssistiveTorque::compute() by
-    // NMKG_TO_NM (= body mass × assist ratio, with the dataset's + = extension
-    // sign flipped to our + = flexion). Reshape the assist by editing this table.
-    //   • phase         : fraction of the stride, 0 = heel strike. MUST be sorted
-    //                     ascending and lie in [0, 1). Include one at phase 0.0.
-    //   • torque_per_kg : biological hip torque at that instant, Nm/kg (dataset sign).
-    // The curve is periodic: it wraps from the last point back to the first, so
-    // the profile is continuous across the heel-strike seam.
+    // The commanded joint torque is a direct lookup on the current gait state,
+    // which is itself a direct decode of the heel/toe FSRs (see GaitFSM). No
+    // stride phase, no timer — the torque responds to what the foot is actually
+    // doing, so it is predictable and easy to validate on a bench. The controller
+    // ramps toward the target at TAU_RATE_NM_S (no torque steps) and only applies
+    // it while GaitFSM::walking() is true (so standing on both feet, which reads
+    // MID_STANCE, does not command a constant extension torque).
+    //
+    // Sign convention (final joint torque): + = FLEXION assist, − = EXTENSION assist.
     namespace Assist {
-        struct TorquePoint { float phase; float torque_per_kg; };
+        // ── THE testing knob ─────────────────────────────────────────────────────────────────
+        // Peak torque (Nm) the profile reaches at its strongest point. The whole profile below is
+        // expressed as FRACTIONS of this, so raising/lowering this one number scales every state
+        // (and the swing push-down) proportionally. Start low for a gentle first run and raise it
+        // as you gain confidence. Keep it ≤ TAU_MAX_NM (the hard safety clamp) or the clamp bites.
+        constexpr float PEAK_TORQUE_NM = 10.0f;
 
-        constexpr TorquePoint TORQUE_POINTS[] = {
-            { 0.00f,  0.50f },   // heel strike
-            { 0.05f,  0.57f },   // early-stance extensor peak
-            { 0.10f,  0.52f },
-            { 0.15f,  0.42f },
-            { 0.20f,  0.30f },
-            { 0.25f,  0.18f },
-            { 0.30f,  0.05f },   // ~zero crossing near 33%
-            { 0.35f, -0.15f },
-            { 0.40f, -0.48f },
-            { 0.45f, -0.78f },
-            { 0.48f, -0.90f },   // pre-swing flexor trough (deepest)
-            { 0.55f, -0.72f },
-            { 0.60f, -0.42f },
-            { 0.65f, -0.22f },
-            { 0.70f, -0.05f },   // ~zero crossing near 71%
-            { 0.75f,  0.10f },
-            { 0.80f,  0.25f },
-            { 0.85f,  0.35f },
-            { 0.90f,  0.42f },
-            { 0.95f,  0.47f },   // rises back toward +0.50 at the seam
+        // Profile SHAPE — fractions of PEAK_TORQUE_NM, one per gait state. Index by
+        // static_cast<uint8_t>(GaitState); order MUST match the enum: LOADING, MID_STANCE,
+        // TERMINAL_STANCE, SWING. Sign = our convention (+ = flexion, − = extension). The ±1.0
+        // entry defines the peak; keep every |fraction| ≤ 1.0.
+        constexpr float STATE_TORQUE_FRAC[4] = {
+            -0.75f,   // LOADING          heel-only: extension assist, weight acceptance
+            -0.375f,  // MID_STANCE       both:      light extension while body passes over the foot
+            +1.00f,   // TERMINAL_STANCE  toe-only:  flexion assist, push-off  (this is the peak)
+             0.0f,    // SWING            airborne:  base is 0 — swing is handled specially below
         };
-        constexpr int TORQUE_N = sizeof(TORQUE_POINTS) / sizeof(TORQUE_POINTS[0]);
 
-        // Per-kg biological profile → joint-torque command (Nm).
-        //   tau = gain × NMKG_TO_NM × spline(phase)
-        // NMKG_TO_NM folds in the wearer's mass, the assist ratio (fraction of the
-        // biological moment the exo delivers), and the + = extension → + = flexion
-        // sign flip. At 0.90 Nm/kg peak this gives ≈ 0.90 × 80 × 0.07 ≈ 5.0 Nm.
-        constexpr float BODY_MASS_KG = 80.0f;   // wearer mass used to scale the per-kg profile
-        constexpr float ASSIST_RATIO = 0.07f;   // exo delivers this fraction of the biological moment
-        constexpr float NMKG_TO_NM   = -ASSIST_RATIO * BODY_MASS_KG;   // incl. sign flip
+        // SWING push-down (cadence-timed), also a fraction of PEAK_TORQUE_NM. The foot is airborne
+        // so the FSRs are blind; instead we estimate swing progress from cadence
+        // (GaitFSM::swingProgress()) and, only AFTER the estimated peak-flexion reversal, drive the
+        // leg DOWN toward heel strike with a ramping extension torque. Pushing only in late swing
+        // assists the leg's own descent rather than fighting a still-rising leg.
+        //   SWING_PUSH_START : swing progress [0,1] at which the push-down begins (~reversal).
+        //                      Bias it LATE for safety — earlier risks resisting the rising leg.
+        //   SWING_PUSH_FRAC  : peak push-down fraction at estimated heel strike (negative = down).
+        //   SWING_PUSH_END   : upper bound on swing progress. Past this the swing has lasted longer
+        //                      than a plausible stride — a MISSED heel strike, a stumble, or both
+        //                      FSRs dropping out while the foot is actually planted — so we WITHHOLD
+        //                      the push rather than keep driving extension into a leg whose real
+        //                      state we've lost. Bounds a mistimed/missed push to a short window
+        //                      instead of holding until the walking() watchdog trips.
+        constexpr float SWING_PUSH_START = 0.60f;
+        constexpr float SWING_PUSH_FRAC  = -0.50f;
+        constexpr float SWING_PUSH_END   = 1.30f;
 
-        // Master scale + safety clamp applied in the Controller.
-        constexpr float GAIN       = 1.0f;   // 0..1 master scale — lower for a gentler first run
+        // Slew-rate limit on the commanded torque, Nm/s. Ramps between targets so a state change
+        // never steps the current. ~40 Nm/s crosses a full-scale swing in ~0.2 s — responsive but
+        // not jerky. This is an absolute rate, so it does NOT scale with PEAK_TORQUE_NM.
+        constexpr float TAU_RATE_NM_S = 40.0f;
+
+        // Extra master scale (0..1) and the hard safety clamp, applied in the Controller. GAIN
+        // multiplies on top of PEAK_TORQUE_NM — for testing, prefer adjusting PEAK_TORQUE_NM and
+        // leave GAIN at 1.0.
+        constexpr float GAIN       = 1.0f;   // 0..1 master scale
         constexpr float TAU_MAX_NM = 6.0f;   // safety clamp on commanded joint torque, Nm
     }
 
@@ -134,7 +163,10 @@ namespace Config {
     // both; when either holds for FALL_CONFIRM_SAMPLES cycles in a row it latches a
     // fall, and safetyTask puts the exo in its safe state (same as an E-stop).
     namespace Safety {
-        constexpr bool  FALL_DETECT_ENABLED = false;   // TEMP: off while testing the spline only
+        // Trips on EITHER a sudden pelvis-pitch rate (FALL_RATE_DPS) OR tilt past FALL_TILT_DEG.
+        // On a confirmed fall the exo latches into the safe state (motors disabled, control task
+        // suspended) and only resumes on a power-cycle / device restart.
+        constexpr bool  FALL_DETECT_ENABLED = true;
 
         // "Sudden" test: rate of change of the filtered pelvis pitch, degrees/sec.
         // Normal walking sways the pelvis only slowly; a topple far exceeds this.
@@ -166,6 +198,13 @@ namespace Config {
         // 1.0 Nm commanded through the old estimate KT×RATIO×EFF (2.07 Nm/A) produced 1.9 Nm at the
         // joint, so the true scale is 2.07 × 1.9. Re-measure if the motor or gearbox changes.
         constexpr float NM_PER_AMP = 3.93f;
+
+        // Per-leg torque sign, tuned empirically on the bench so each side assists (not resists)
+        // in its + = flexion direction. Both currently +1. If a side ever drives the WRONG way
+        // after a mechanics/wiring/firmware change, flip only that side's sign and re-verify at
+        // low GAIN — do not assume the two sides always match.
+        constexpr float DIR_L = +1.0f;
+        constexpr float DIR_R = +1.0f;
     }
 
 }

@@ -29,9 +29,9 @@ MadgwickFilter madgwick_hip2("hip2", Config::Imu::MADGWICK_BETA, Config::Rates::
 
 // FSR Objects
 FSR fsr_left_heel ("Left Heel FSR",  LEFT_HEEL_FSR_PIN);
-FSR fsr_left_toe  ("Left Toe FSR",   LEFT_TOE_FSR_PIN);
+FSR fsr_left_toe  ("Left Toe FSR",   LEFT_TOE_FSR_PIN,   Config::FSR::TOE_THRESHOLD);
 FSR fsr_right_heel("Right Heel FSR", RIGHT_HEEL_FSR_PIN);
-FSR fsr_right_toe ("Right Toe FSR",  RIGHT_TOE_FSR_PIN);
+FSR fsr_right_toe ("Right Toe FSR",  RIGHT_TOE_FSR_PIN,  Config::FSR::TOE_THRESHOLD);
 
 // Motor CAN bus — SimpleFOC CANCommander protocol to the MKS XDrive Mini drives
 MotorCAN motor_can("Motor CAN", MOTOR_NODE_L, MOTOR_NODE_R);
@@ -226,6 +226,16 @@ static void monitorTask(void* /*pvParams*/) {
         Serial.print(" deg | pelvis ");  Serial.print(pelvis_pitch_y, 1);
         Serial.print(" deg  rate ");     Serial.print(pelvis_pitch_rate_y, 2);
         Serial.print(" rad/s | FALL ");  Serial.println(fall_detected ? "1" : "0");
+
+        // CAN feedback freshness — ms since each drive last answered a READ. If a node's age keeps
+        // climbing it has stopped responding to reads; if it stays small but angle/vel read 0, the
+        // drive is answering but its position sensor is unconfigured/unmoving. (bench diagnostic)
+        uint32_t now = millis();
+        Serial.print("CAN   | node ");   Serial.print(MOTOR_NODE_L);
+        Serial.print(" (L) resp age ");  Serial.print(now - motor_can.lastResponseMs(MOTOR_NODE_L));
+        Serial.print(" ms | node ");     Serial.print(MOTOR_NODE_R);
+        Serial.print(" (R) resp age ");  Serial.print(now - motor_can.lastResponseMs(MOTOR_NODE_R));
+        Serial.println(" ms");
 
         // One chunk per leg, aligned for easy left/right comparison
         printLeg("LEFT ", gait_state_L, gait_phase_L, motor_angle_L, motor_vel_L, tau_cmd_L,

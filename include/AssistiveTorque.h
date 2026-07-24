@@ -2,16 +2,16 @@
 
 #include <Arduino.h>
 
-// Assistive hip torque profile — decoupled from gait estimation.
+#include "GaitFSM.h"   // GaitState
+
+// Assistive hip torque — CONTACT-DRIVEN.
 //
-// The torque curve is a periodic Catmull-Rom spline drawn smoothly THROUGH a table of
-// {phase, torque} control points (Config::Assist::TORQUE_POINTS): extension assist (negative)
-// during stance, flexion assist (positive) around toe-off/early swing. Sign convention:
-// + = flexion assist, − = extension assist.
-//
-// Takes the gait phase (e.g. from GaitFSM::phase()) and returns joint torque in Nm, so the
-// profile is a pure function of phase — independent of how that phase was estimated. This keeps
-// the torque shaping separate from the gait state machine; both can be tuned in isolation.
+// The target torque is a direct lookup on the current gait state (Config::Assist::STATE_TORQUE_NM),
+// which is itself a decode of the foot's heel/toe FSRs. Sign convention: + = flexion assist,
+// − = extension assist. There is no stride phase and no timer here — the torque is a pure function
+// of what the foot is doing right now, which makes it predictable and bench-verifiable. The
+// Controller is responsible for slew-limiting toward this target, gating on GaitFSM::walking(),
+// and clamping to the safety backstop.
 class AssistiveTorque {
     public:
         // Constructor
@@ -21,24 +21,19 @@ class AssistiveTorque {
 
         // Public Methods
         // ----------------------------------------------------------------------------------------
-        // Joint torque (Nm) for the given gait phase [0, 1].
-        // `gain` is a 0..1 master scale for safe ramp-up. Smooth by construction — no torque steps.
-        float compute(float phase, float gain = 1.0f) const;
+        // Target joint torque (Nm) for the given gait state. In SWING the FSRs are blind, so
+        // `swing_progress` (from GaitFSM::swingProgress()) times a cadence-based push-down; it is
+        // ignored in every other state. `gain` is a 0..1 master scale for safe ramp-up.
+        float compute(GaitState state, float swing_progress, float gain = 1.0f) const;
 
         // Serial Monitor (for debugging only)
         // ----------------------------------------------------------------------------------------
-        void printData(float phase, float gain = 1.0f) const;
+        void printData(GaitState state, float swing_progress, float gain = 1.0f) const;
 
     private:
         // Internal Variables
         // ----------------------------------------------------------------------------------------
         String _name;
 
-        // Helper Functions
-        // ----------------------------------------------------------------------------------------
-        // Evaluate the periodic Catmull-Rom spline through Config::Assist::TORQUE_POINTS at the
-        // given stride phase. Returns the raw (un-gained) torque in Nm.
-        static float splineTorque(float phase);
-
-        // Profile shape (the control-point table) lives in Config.h → Config::Assist.
+        // The per-state torque table lives in Config.h → Config::Assist::STATE_TORQUE_NM.
 };

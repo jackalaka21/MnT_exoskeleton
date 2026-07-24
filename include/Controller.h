@@ -43,7 +43,7 @@ class Controller {
         // ----------------------------------------------------------------------------------------
         // One leg: read feedback, compute the assist torque for its gait phase, clamp, and send.
         // Writes the leg's angle/velocity/torque into the shared volatile outputs.
-        void _controlLeg(uint8_t node, GaitFSM& gait,
+        void _controlLeg(uint8_t node, GaitFSM& gait, float dir,
                          volatile float* angle, volatile float* velocity, volatile float* tau_cmd);
 
         // Tuning constants (assist gain, torque clamp) live in Config.h → Config::Assist.

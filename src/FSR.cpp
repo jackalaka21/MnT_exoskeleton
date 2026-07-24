@@ -23,25 +23,36 @@ void FSR::_readRawData() {
 
 // Update Contact State
 void FSR::_updateContactState() {
-    if (_value > _threshold + Config::FSR::HYSTERESIS) {
-        _contact = true;
+    // Candidate contact from the hysteresis band. Inside the deadband the candidate stays equal to
+    // the current state, so no change is pending there.
+    bool candidate = _contact;
+    if      (_value > _threshold + Config::FSR::HYSTERESIS) candidate = true;
+    else if (_value < _threshold - Config::FSR::HYSTERESIS) candidate = false;
+
+    // Debounce: adopt the candidate only after it has held for DEBOUNCE_SAMPLES cycles in a row.
+    // Any sample that agrees with the current state (including in-band samples) resets the counter,
+    // so a lone spike or dropout — the false / missed trigger we're guarding against — is rejected.
+    if (candidate == _contact) {
+        _debounce = 0;
     }
-    else if (_value < _threshold - Config::FSR::HYSTERESIS) {
-        _contact = false;
+    else if (++_debounce >= Config::FSR::DEBOUNCE_SAMPLES) {
+        _contact  = candidate;
+        _debounce = 0;
     }
 }
 
 // Constructor
 // --------------------------------------------------------------------------------------------
-FSR::FSR(String name, int pin, float alpha) {
+FSR::FSR(String name, int pin, uint8_t threshold, float alpha) {
     _sensorName = name;
     _pin     = pin;
     _value   = 0;
     _contact = false;
-    _threshold = Config::FSR::THRESHOLD;
+    _threshold = threshold;
     _ema      = 0.0f;
     _emaAlpha = alpha;
     _emaInit  = false;
+    _debounce = 0;
 }
 
 // Public Methods

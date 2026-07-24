@@ -39,18 +39,54 @@ void GaitFSM::update(bool heel_contact, bool toe_contact) {
     else if (!heel_contact &&  toe_contact) next = GaitState::TERMINAL_STANCE;  // (0,1)
     else                                    next = GaitState::SWING;            // (0,0)
 
-    // Edge events are defined by entering/leaving SWING (the airborne phase):
-    //   • initial ground contact after swing → HEEL STRIKE: the phase-0 reference; close the stride.
+    // First call: adopt the real contact state without emitting an edge event. The FSM boots in
+    // MID_STANCE (safe standing default), but the feet may actually read anything at power-up
+    // (e.g. no contact on a bench = SWING). Without this, that boot mismatch fires a phantom
+    // toe-off / heel-strike, which would trip the walking() watchdog and spin the motor at startup.
+    if (!_primed) {
+        _primed = true;
+        _state  = next;
+        return;   // stay idle: no events, walking() false, zero assist until real gait begins
+    }
+
+    // Edge events + gait-sync validation (see synced()).
+    //   • initial ground contact after swing → HEEL STRIKE: phase-0 reference; close the stride.
     //   • foot leaving the ground            → TOE OFF: the foot has gone airborne.
     if (_state == GaitState::SWING && next != GaitState::SWING) {
-        _heel_strike = true;
-        _closeStride();   // measures the stride just completed, resets the phase clock
+        // Entering stance from swing. A plausible initial contact is heel-first (LOADING) or a
+        // fast heel+toe (MID_STANCE) — both have the heel loaded. A toe-ONLY contact from mid-air
+        // (→ TERMINAL_STANCE) is the false-toe signature and is caught by the sequence guard below.
+        if (next == GaitState::LOADING || next == GaitState::MID_STANCE) {
+            _heel_strike = true;
+            _synced      = true;
+            _closeStride();   // measures the stride just completed, resets the phase clock
+        }
     }
     else if (_state != GaitState::SWING && next == GaitState::SWING) {
         _toe_off = true;
     }
 
+    // Sequence guard: TERMINAL_STANCE drives the largest (flexion) torque, so only trust it when
+    // reached legally, through MID_STANCE. Reaching it from SWING (false toe from mid-air) or
+    // straight from LOADING (skipped foot-flat) is a sensor-fault signature → drop sync, so the
+    // controller withholds assist until a clean heel strike re-syncs the gait.
+    if (next == GaitState::TERMINAL_STANCE &&
+        _state != GaitState::MID_STANCE && _state != GaitState::TERMINAL_STANCE) {
+        _synced = false;
+    }
+
     _state = next;
+
+    // Activity watchdog. Reset on every edge event; otherwise it grows unbounded. Once it passes
+    // IDLE_TIMEOUT_S, walking() reads false and the controller cuts assist — this is what stops
+    // the phase clock from driving torque when no FSR ever fires (bench / foot in the air).
+    if (_heel_strike || _toe_off) _t_since_event = 0.0f;
+    else                          _t_since_event += _dt;
+
+    // Swing timer for the cadence-based push-down. Restart it at toe-off (swing begins); it then
+    // measures how far into the swing we are. Only read via swingProgress() while state == SWING.
+    if (_toe_off) _t_in_swing = 0.0f;
+    _t_in_swing += _dt;
 
     // Advance the phase clock every cycle and normalise against the current stride estimate.
     // Held at 1.0 if the stride overruns the estimate (e.g. a pause mid-step) rather than
