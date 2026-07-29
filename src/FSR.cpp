@@ -6,7 +6,9 @@
 // --------------------------------------------------------------------------------------------
 // Read Raw Analog Data, normalise to 0–255 and apply an EMA spike filter
 void FSR::_readRawData() {
-    float raw = (float)(analogRead(_pin) >> 2);
+    // Apply the per-sensor sensitivity gain, then clamp back into the 0–255 range.
+    float raw = (float)(analogRead(_pin) >> 2) * _gain;
+    if (raw > 255.0f) raw = 255.0f;
 
     // Seed the average on the first read so we don't ramp up from 0.
     if (!_emaInit) {
@@ -43,7 +45,7 @@ void FSR::_updateContactState() {
 
 // Constructor
 // --------------------------------------------------------------------------------------------
-FSR::FSR(String name, int pin, uint8_t threshold, float alpha) {
+FSR::FSR(String name, int pin, uint8_t threshold, float alpha, float gain) {
     _sensorName = name;
     _pin     = pin;
     _value   = 0;
@@ -52,6 +54,7 @@ FSR::FSR(String name, int pin, uint8_t threshold, float alpha) {
     _ema      = 0.0f;
     _emaAlpha = alpha;
     _emaInit  = false;
+    _gain     = gain;
     _debounce = 0;
 }
 

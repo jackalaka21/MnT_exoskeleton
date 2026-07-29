@@ -27,11 +27,12 @@ IMU imu_hip2("Hip IMU 2", IMU2_address, I2C_Bus);
 MadgwickFilter madgwick_hip1("hip1", Config::Imu::MADGWICK_BETA, Config::Rates::SENSOR_HZ);
 MadgwickFilter madgwick_hip2("hip2", Config::Imu::MADGWICK_BETA, Config::Rates::SENSOR_HZ);
 
-// FSR Objects
-FSR fsr_left_heel ("Left Heel FSR",  LEFT_HEEL_FSR_PIN);
-FSR fsr_left_toe  ("Left Toe FSR",   LEFT_TOE_FSR_PIN,   Config::FSR::TOE_THRESHOLD);
-FSR fsr_right_heel("Right Heel FSR", RIGHT_HEEL_FSR_PIN);
-FSR fsr_right_toe ("Right Toe FSR",  RIGHT_TOE_FSR_PIN,  Config::FSR::TOE_THRESHOLD);
+// FSR Objects — last arg is the per-sensor sensitivity gain (Config::FSR::*_GAIN) so each
+// of the four FSRs can be matched independently despite differing sensitivity.
+FSR fsr_left_heel ("Left Heel FSR",  LEFT_HEEL_FSR_PIN,  Config::FSR::THRESHOLD,     Config::FSR::EMA_ALPHA, Config::FSR::LEFT_HEEL_GAIN);
+FSR fsr_left_toe  ("Left Toe FSR",   LEFT_TOE_FSR_PIN,   Config::FSR::TOE_THRESHOLD, Config::FSR::EMA_ALPHA, Config::FSR::LEFT_TOE_GAIN);
+FSR fsr_right_heel("Right Heel FSR", RIGHT_HEEL_FSR_PIN, Config::FSR::THRESHOLD,     Config::FSR::EMA_ALPHA, Config::FSR::RIGHT_HEEL_GAIN);
+FSR fsr_right_toe ("Right Toe FSR",  RIGHT_TOE_FSR_PIN,  Config::FSR::TOE_THRESHOLD, Config::FSR::EMA_ALPHA, Config::FSR::RIGHT_TOE_GAIN);
 
 // Motor CAN bus — SimpleFOC CANCommander protocol to the MKS XDrive Mini drives
 MotorCAN motor_can("Motor CAN", MOTOR_NODE_L, MOTOR_NODE_R);
@@ -225,7 +226,8 @@ static void monitorTask(void* /*pvParams*/) {
         Serial.print(" deg  hip2 ");     Serial.print(imu_hip2_angle_y, 1);
         Serial.print(" deg | pelvis ");  Serial.print(pelvis_pitch_y, 1);
         Serial.print(" deg  rate ");     Serial.print(pelvis_pitch_rate_y, 2);
-        Serial.print(" rad/s | FALL ");  Serial.println(fall_detected ? "1" : "0");
+        Serial.print(" rad/s | FALL ");  Serial.print(fall_detected ? "1" : "0");
+        Serial.print(" | STANDING ");    Serial.println(standing_detected ? "1" : "0");
 
         // CAN feedback freshness — ms since each drive last answered a READ. If a node's age keeps
         // climbing it has stopped responding to reads; if it stays small but angle/vel read 0, the

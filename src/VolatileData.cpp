@@ -50,6 +50,9 @@ volatile float   gait_phase_R = 0.0f;
 volatile uint8_t gait_state_L = 1;   // GaitState::MID_STANCE
 volatile uint8_t gait_state_R = 1;
 
+// Standing detector — boots true (both feet planted = safe standing default, zero assist)
+volatile bool standing_detected = true;
+
 // Motor control
 // --------------------------------------------------------------------------------------------
 volatile float tau_cmd_L = 0.0f;

@@ -45,9 +45,21 @@ namespace Config {
         // Per-sensor threshold — LOWER = MORE SENSITIVE (triggers with less force).
         // The forefoot (toe) sits lower so it picks up the lighter push-off load.
         // Keep any threshold above HYSTERESIS so THRESHOLD−HYSTERESIS can't underflow.
-        constexpr uint8_t THRESHOLD     = 100;   // 0–255 — default / heel
+        constexpr uint8_t THRESHOLD     = 90;   // 0–255 — default / heel
         constexpr uint8_t TOE_THRESHOLD = 25;   // 0–255 — forefoot (more sensitive)
         constexpr uint8_t HYSTERESIS    = 10;   // 0–255
+
+        // Per-SENSOR sensitivity gain. The reading is multiplied by this before the
+        // threshold compare, so it rescales a physically less/more sensitive sensor
+        // onto the common thresholds above (result is clamped to 255). >1.0 makes a
+        // sluggish sensor trigger with less force; 1.0 = no change. Each of the four
+        // FSRs is tuned independently — press each one with a known load and raise its
+        // gain until it asserts contact at a force comparable to the others.
+        constexpr float DEFAULT_GAIN     = 1.0f;   // no scaling (constructor fallback)
+        constexpr float LEFT_HEEL_GAIN   = 2.0f;
+        constexpr float LEFT_TOE_GAIN    = 0.5f;
+        constexpr float RIGHT_HEEL_GAIN  = 1.0f;
+        constexpr float RIGHT_TOE_GAIN   = 1.0f;
 
         // Debounce: a new contact state must persist this many consecutive samples before it is
         // adopted, so a single-cycle spike (false trigger) or dropout (missed trigger) can't flip
@@ -83,6 +95,16 @@ namespace Config {
         // leaves margin while cutting assist within ~1 stride of the wearer stopping. Lower it for
         // a faster cutoff, but not below ~0.7 or slow walking will false-trip mid-stance.
         constexpr float IDLE_TIMEOUT_STRIDES = 1.25f;
+
+        // Standing detector (whole-body, FSR-only). While WALKING, both feet are loaded at the same
+        // time only briefly (double-support, ~0.1–0.2 s per stride); while STANDING, both feet stay
+        // loaded indefinitely. So if BOTH feet ("heel OR toe" on each leg) stay continuously loaded
+        // for longer than this, the wearer is standing → the controller zeroes assist on BOTH legs.
+        // Keep this ABOVE the longest physiological double-support (~0.2 s at slow cadence) so a real
+        // stride can't trip it, but low enough to cut assist quickly once the wearer stops. This is a
+        // POSITIVE stop signal, unlike the silence-based IDLE_TIMEOUT_STRIDES watchdog (kept as a
+        // backstop): postural sway / FSR chatter can't fool it because it requires SUSTAINED contact.
+        constexpr float STANDING_DOUBLE_SUPPORT_S = 0.45f;
     }
 
     // ------------------------------------------------------------------------
@@ -103,15 +125,15 @@ namespace Config {
         // expressed as FRACTIONS of this, so raising/lowering this one number scales every state
         // (and the swing push-down) proportionally. Start low for a gentle first run and raise it
         // as you gain confidence. Keep it ≤ TAU_MAX_NM (the hard safety clamp) or the clamp bites.
-        constexpr float PEAK_TORQUE_NM = 10.0f;
+        constexpr float PEAK_TORQUE_NM = 3.0f;
 
         // Profile SHAPE — fractions of PEAK_TORQUE_NM, one per gait state. Index by
         // static_cast<uint8_t>(GaitState); order MUST match the enum: LOADING, MID_STANCE,
         // TERMINAL_STANCE, SWING. Sign = our convention (+ = flexion, − = extension). The ±1.0
         // entry defines the peak; keep every |fraction| ≤ 1.0.
         constexpr float STATE_TORQUE_FRAC[4] = {
-            -0.75f,   // LOADING          heel-only: extension assist, weight acceptance
-            -0.375f,  // MID_STANCE       both:      light extension while body passes over the foot
+            -0.80f,   // LOADING          heel-only: extension assist, weight acceptance
+            -0.45f,  // MID_STANCE       both:      light extension while body passes over the foot
             +1.00f,   // TERMINAL_STANCE  toe-only:  flexion assist, push-off  (this is the peak)
              0.0f,    // SWING            airborne:  base is 0 — swing is handled specially below
         };

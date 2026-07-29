@@ -25,6 +25,18 @@ void Controller::updateGaitPhase() {
     gait_phase_R = _gait_right.phase();
     gait_state_L = static_cast<uint8_t>(_gait_left.state());
     gait_state_R = static_cast<uint8_t>(_gait_right.state());
+
+    // Whole-body standing detector. Both feet loaded ("heel OR toe" per leg) at once is only brief
+    // double-support while walking, but sustained while standing. Time how long that persists; past
+    // STANDING_DOUBLE_SUPPORT_S the wearer is standing and both legs' assist is cut. A POSITIVE stop
+    // signal (requires sustained contact) so sway / FSR chatter can't fool it — unlike the FSM's
+    // silence-based walking() watchdog, which stays as a backstop.
+    bool left_loaded  = fsr_left_heel_contact  || fsr_left_toe_contact;
+    bool right_loaded = fsr_right_heel_contact || fsr_right_toe_contact;
+    if (left_loaded && right_loaded) _double_support_s += Config::Rates::SENSOR_DT;
+    else                             _double_support_s = 0.0f;
+    _standing = (_double_support_s >= Config::Gait::STANDING_DOUBLE_SUPPORT_S);
+    standing_detected = _standing;   // publish for the logger
 }
 
 void Controller::applyAssistiveTorque() {
@@ -53,14 +65,16 @@ void Controller::_controlLeg(uint8_t node, GaitFSM& gait, float dir,
     _can.requestAngle(node);
     _can.requestVelocity(node);
 
-    // CONTACT-DRIVEN assist: the target torque is a direct lookup on the current foot-contact
-    // state. SAFETY GATES — assist only when BOTH hold, else the target is exactly zero:
-    //   walking() : actively striding (standing on both feet reads MID_STANCE; without this that
-    //               would command a constant extension torque; also covers airborne / bench).
-    //   synced()  : the gait sequence looks real — a faulty FSR that produces an implausible state
-    //               transition drops sync, so it cannot command an unexpected torque.
+    // CONTACT-DRIVEN torque target: direct per-state lookup on the FSR-only GaitFSM. The result is
+    // clamped to ±TAU_MAX_NM, and if no gate holds the target is exactly zero.
+    // SAFETY GATES — assist only when ALL hold, else the target is exactly zero:
+    //   !_standing : the whole-body standing detector is not asserting (both feet planted = stopped).
+    //   walking()  : actively striding (standing on both feet reads MID_STANCE; without this that
+    //                would command a constant extension torque; also covers airborne / bench).
+    //   synced()   : the gait sequence looks real — a faulty FSR that produces an implausible state
+    //                transition drops sync, so it cannot command an unexpected torque.
     float target = 0.0f;
-    if (gait.walking() && gait.synced()) {
+    if (!_standing && gait.walking() && gait.synced()) {
         // dir carries this leg's torque sign (the drive's +current vs our +flexion convention).
         // In SWING the torque comes from the cadence-timed push-down (swingProgress); elsewhere
         // it is the flat per-state target.

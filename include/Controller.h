@@ -39,6 +39,12 @@ class Controller {
         GaitFSM         _gait_right;
         AssistiveTorque _assist;       // gait phase → joint torque, shared by both legs
 
+        // Whole-body standing detector (FSR-only): how long BOTH feet have been continuously loaded,
+        // and the latched "standing" flag once that passes STANDING_DOUBLE_SUPPORT_S. While standing,
+        // both legs' assist is forced to zero. Updated in updateGaitPhase(), consumed in _controlLeg.
+        float _double_support_s = 0.0f;
+        bool  _standing         = true;   // boots standing (both feet planted) → zero assist
+
         // Helper Functions
         // ----------------------------------------------------------------------------------------
         // One leg: read feedback, compute the assist torque for its gait phase, clamp, and send.

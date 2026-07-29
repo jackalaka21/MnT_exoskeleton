@@ -74,12 +74,14 @@ class GaitFSM {
         bool toeOff()     const { return _toe_off; }        // stance → SWING (foot airborne)
 
         // Gait sync — true only while the state sequence looks like a real stride. It is SET by a
-        // plausible heel-first initial contact (SWING → LOADING / MID_STANCE) and CLEARED by a
-        // sensor-fault signature: reaching TERMINAL_STANCE (which drives the largest push-off
-        // torque) any way other than through MID_STANCE — e.g. a toe-only contact appearing from
-        // mid-air (false toe FSR). SAFETY: the controller must withhold assist while this is false,
-        // so a faulty FSR cannot command an unexpected torque. Starts false (no assist until a real
-        // heel strike is seen), and re-arms on the next clean heel strike.
+        // plausible heel-first initial contact (SWING → LOADING / MID_STANCE) and CLEARED by the one
+        // sensor-fault signature: TERMINAL_STANCE (which drives the largest push-off torque) reached
+        // straight from SWING — a toe-only contact from mid-air (false toe FSR) with no preceding
+        // heel load. Note the foot need NOT pass through every prior state: a fast heel-to-toe roll
+        // can skip MID_STANCE (foot-flat never registers on both FSRs at once), so
+        // LOADING → TERMINAL_STANCE stays synced. SAFETY: the controller must withhold assist while
+        // this is false, so a faulty FSR cannot command an unexpected torque. Starts false (no assist
+        // until a real heel strike is seen), and re-arms on the next clean heel strike.
         bool synced() const { return _synced; }
 
         // Activity watchdog. True only while gait edge events keep arriving; goes false once no

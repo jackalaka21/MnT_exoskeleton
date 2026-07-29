@@ -77,6 +77,10 @@ extern volatile float   gait_phase_R;    // continuous stride phase [0,1], 0 = r
 extern volatile uint8_t gait_state_L;    // GaitState (0=LOADING,1=MID_STANCE,2=TERMINAL_STANCE,3=SWING)
 extern volatile uint8_t gait_state_R;
 
+// Standing detector — true while BOTH feet have been continuously loaded past the double-support
+// window (see Config::Gait::STANDING_DOUBLE_SUPPORT_S). Whole-body; zeroes assist on both legs.
+extern volatile bool standing_detected;  // written by updateGaitPhase, read by logger
+
 // Motor control
 // --------------------------------------------------------------------------------------------
 extern volatile float tau_cmd_L;         // Nm at the joint — sent via MotorCAN::setTorqueNm()

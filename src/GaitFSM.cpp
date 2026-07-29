@@ -66,12 +66,14 @@ void GaitFSM::update(bool heel_contact, bool toe_contact) {
         _toe_off = true;
     }
 
-    // Sequence guard: TERMINAL_STANCE drives the largest (flexion) torque, so only trust it when
-    // reached legally, through MID_STANCE. Reaching it from SWING (false toe from mid-air) or
-    // straight from LOADING (skipped foot-flat) is a sensor-fault signature → drop sync, so the
-    // controller withholds assist until a clean heel strike re-syncs the gait.
-    if (next == GaitState::TERMINAL_STANCE &&
-        _state != GaitState::MID_STANCE && _state != GaitState::TERMINAL_STANCE) {
+    // Sequence guard: TERMINAL_STANCE drives the largest (flexion) torque, so guard how it is
+    // reached — but do NOT require the foot to pass through every prior state. A quick heel-to-toe
+    // roll can skip MID_STANCE entirely (foot-flat never registers on both FSRs at once), so
+    // LOADING → TERMINAL_STANCE is a legal stride and must keep sync. The ONLY fault signature is
+    // TERMINAL_STANCE appearing straight out of SWING — a toe-only contact from mid-air (false toe
+    // FSR) with no preceding heel load. That still drops sync, so the controller withholds assist
+    // until a clean heel strike re-syncs the gait.
+    if (next == GaitState::TERMINAL_STANCE && _state == GaitState::SWING) {
         _synced = false;
     }
 

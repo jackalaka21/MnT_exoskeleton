@@ -23,6 +23,9 @@ class FSR {
         float   _emaAlpha;         // smoothing factor (0–1); lower = smoother
         bool    _emaInit;          // seed EMA with first sample
 
+        // Per-sensor sensitivity gain applied to the raw reading before thresholding
+        float   _gain;             // >1.0 = more sensitive; 1.0 = no change
+
         // Debounce — consecutive samples the pending contact state has held (see Config::FSR)
         uint8_t _debounce;
 
@@ -43,9 +46,13 @@ class FSR {
         //            Config::FSR::THRESHOLD; pass Config::FSR::TOE_THRESHOLD for a forefoot sensor.
         // alpha:     EMA smoothing factor (0–1). Lower filters spikes harder but adds lag.
         //            Defaults to Config::FSR::EMA_ALPHA; override per sensor here.
+        // gain:      sensitivity multiplier applied to the raw reading before thresholding
+        //            (result clamped to 255). >1.0 = more sensitive. Use it to match a
+        //            physically less-sensitive sensor to the other side (see Config::FSR).
         FSR(String name, int pin,
             uint8_t threshold = Config::FSR::THRESHOLD,
-            float   alpha     = Config::FSR::EMA_ALPHA);
+            float   alpha     = Config::FSR::EMA_ALPHA,
+            float   gain      = Config::FSR::DEFAULT_GAIN);
 
         // Public Methods
         // --------------------------------------------------------------------------------------------
