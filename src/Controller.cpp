@@ -15,32 +15,30 @@ Controller::Controller(MotorCAN& can)
 // Public Methods
 // --------------------------------------------------------------------------------------------
 void Controller::updateGaitPhase() {
-    // FSR-only: heel/toe contact flags drive the estimator (no hip-velocity gate). Each leg gets
-    // its own foot contacts; the phase stays synced to the wearer's cadence.
+    // Each leg's own heel/toe contacts drive its estimator.
     _gait_left.update (fsr_left_heel_contact,  fsr_left_toe_contact);
     _gait_right.update(fsr_right_heel_contact, fsr_right_toe_contact);
 
-    // Publish the gait state for the logger / monitor.
+    // Publish for the logger / monitor.
     gait_phase_L = _gait_left.phase();
     gait_phase_R = _gait_right.phase();
     gait_state_L = static_cast<uint8_t>(_gait_left.state());
     gait_state_R = static_cast<uint8_t>(_gait_right.state());
 
-    // Whole-body standing detector. Both feet loaded ("heel OR toe" per leg) at once is only brief
-    // double-support while walking, but sustained while standing. Time how long that persists; past
-    // STANDING_DOUBLE_SUPPORT_S the wearer is standing and both legs' assist is cut. A POSITIVE stop
-    // signal (requires sustained contact) so sway / FSR chatter can't fool it — unlike the FSM's
-    // silence-based walking() watchdog, which stays as a backstop.
+    // Standing detector. Both feet loaded at once is brief while walking but continuous while
+    // standing, so time it: past STANDING_DOUBLE_SUPPORT_S we cut assist on both legs. Needs
+    // sustained contact, so sway and FSR chatter can't fool it — unlike the FSM's silence-based
+    // walking() watchdog, which stays as a backstop.
     bool left_loaded  = fsr_left_heel_contact  || fsr_left_toe_contact;
     bool right_loaded = fsr_right_heel_contact || fsr_right_toe_contact;
     if (left_loaded && right_loaded) _double_support_s += Config::Rates::SENSOR_DT;
     else                             _double_support_s = 0.0f;
     _standing = (_double_support_s >= Config::Gait::STANDING_DOUBLE_SUPPORT_S);
-    standing_detected = _standing;   // publish for the logger
+    standing_detected = _standing;
 }
 
 void Controller::applyAssistiveTorque() {
-    // Drain the shared RX FIFO once, then service both legs from the fresh feedback.
+    // Drain the shared RX FIFO once, then run both legs off the fresh feedback.
     _can.poll();
     if (!_can.armed()) return;
 
@@ -50,43 +48,44 @@ void Controller::applyAssistiveTorque() {
 
 // Helper Functions
 // --------------------------------------------------------------------------------------------
-// One leg's torque law — REAL HARDWARE: pure assistive torque tracking the gait phase.
-//   assist — the AssistiveTorque profile maps this leg's gait phase (from its FSR-driven GaitFSM)
-//            to an OpenExo-style flexion/extension torque.
-// No centering spring: on the exo the leg is anchored by gravity and ground reaction, so the bench
-// spring (which held a free arm to a home angle) is gone. The command is clamped to a safety
-// backstop above the profile's own peak (max designed |torque| ≈ 5 Nm, hardware ≈ 27 Nm).
+// One leg's torque law: pure assist tracking the gait state. No centering spring — on the exo the
+// leg is held by gravity and ground reaction, unlike the bench rig it came from.
 void Controller::_controlLeg(uint8_t node, GaitFSM& gait, float dir,
                              volatile float* angle, volatile float* velocity, volatile float* tau_cmd) {
-    // Publish latest angle/velocity (poll() already drained the shared RX FIFO this cycle)
+    // Publish the latest angle/velocity (poll() already drained the FIFO this cycle).
     _can.read(node, angle, velocity);
 
-    // Queue next feedback requests (drive answers by the next cycle)
+    // Queue the next reads — the drive answers by the next cycle.
     _can.requestAngle(node);
     _can.requestVelocity(node);
 
-    // CONTACT-DRIVEN torque target: direct per-state lookup on the FSR-only GaitFSM. The result is
-    // clamped to ±TAU_MAX_NM, and if no gate holds the target is exactly zero.
-    // SAFETY GATES — assist only when ALL hold, else the target is exactly zero:
-    //   !_standing : the whole-body standing detector is not asserting (both feet planted = stopped).
-    //   walking()  : actively striding (standing on both feet reads MID_STANCE; without this that
-    //                would command a constant extension torque; also covers airborne / bench).
-    //   synced()   : the gait sequence looks real — a faulty FSR that produces an implausible state
-    //                transition drops sync, so it cannot command an unexpected torque.
+    // Torque target: per-state lookup, clamped to ±TAU_MAX_NM. Assist only when all three gates
+    // hold, otherwise the target is exactly zero:
+    //   !_standing : the wearer isn't stopped with both feet planted.
+    //   walking()  : actively striding (standing reads MID_STANCE, which would otherwise command
+    //                a constant extension torque). Also covers airborne / bench.
+    //   synced()   : the state sequence looks real, so a faulty FSR can't command torque.
+    const bool assist_ok = (!_standing && gait.walking() && gait.synced());
+
     float target = 0.0f;
-    if (!_standing && gait.walking() && gait.synced()) {
-        // dir carries this leg's torque sign (the drive's +current vs our +flexion convention).
-        // In SWING the torque comes from the cadence-timed push-down (swingProgress); elsewhere
-        // it is the flat per-state target.
-        target = dir * constrain(_assist.compute(gait.state(), gait.swingProgress(), Config::Assist::GAIN),
+    if (assist_ok) {
+        // dir is this leg's sign (the drive's +current vs our +flexion). Flat per-state target;
+        // SWING is zero, so the leg is left free through the airborne phase.
+        target = dir * constrain(_assist.compute(gait.state(), Config::Assist::GAIN),
                                  -Config::Assist::TAU_MAX_NM, Config::Assist::TAU_MAX_NM);
     }
 
-    // Slew-rate limit toward the target so a state change ramps the torque instead of stepping it.
-    float max_step = Config::Assist::TAU_RATE_NM_S / Config::Rates::CONTROL_HZ;   // Nm per cycle
+    // Slew limit so a state change ramps the torque instead of stepping it. Backing off toward
+    // zero uses the gentler release rate, which is what takes the edge off the push-off → swing
+    // drop. Only while the gates hold: if assist has been cut we're not shaping a profile any
+    // more, we're making the leg safe, and that goes at the full rate.
+    const bool releasing = assist_ok && (fabsf(target) < fabsf(*tau_cmd));
+    float rate = releasing ? Config::Assist::TAU_RELEASE_RATE_NM_S : Config::Assist::TAU_RATE_NM_S;
+
+    float max_step = rate / Config::Rates::CONTROL_HZ;   // Nm per cycle
     float tau = *tau_cmd + constrain(target - *tau_cmd, -max_step, max_step);
 
-    // Command joint torque in Nm — converted to a motor current inside setTorqueNm().
+    // Command in Nm — setTorqueNm() converts to motor current.
     *tau_cmd = tau;
     _can.setTorqueNm(node, *tau_cmd);
 }

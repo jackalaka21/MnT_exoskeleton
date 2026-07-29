@@ -112,7 +112,7 @@ class MotorCAN {
         // init(). Blocks up to timeout_ms per drive (firmware needs ~10 s to boot before it serves CAN).
         bool startup(uint32_t timeout_ms = 30000);
 
-        // Zero every target and disable every drive; clears the armed flag. Use on E-stop / fault.
+        // Zero every target and disable every drive; clears the armed flag. Use on fault.
         void disableAll();
 
         // True once startup() has brought both drives online and enabled.

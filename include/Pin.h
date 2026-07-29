@@ -3,9 +3,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-// E-stop Pin
-const unsigned int PIN_ESTOP = 2;
-
 // IMU Pins
 // inline: C++17 — allows safe inclusion in multiple .cpp files (one definition rule)
 // constexpr: addresses are compile-time constants, safe in headers

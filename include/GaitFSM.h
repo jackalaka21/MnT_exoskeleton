@@ -4,92 +4,77 @@
 
 #include "Config.h"
 
-// Gait phase estimator — one instance per leg.
+// Gait phase estimator — one per leg. FSR contact is the only input.
 //
-// Produces two outputs every sensor cycle:
-//   1. a discrete GaitState — the four canonical gait phases, decoded directly from the two
-//      foot FSRs (heel + toe contact); and
-//   2. a continuous phase in [0.0, 1.0] spanning the WHOLE stride (0 = heel strike),
-//      normalised against the measured stride period so it stays in sync as cadence
-//      changes — unlike a fixed-period timer, which drifts the moment walking speed does.
+// Outputs each sensor cycle:
+//   1. a discrete GaitState, decoded straight from the heel/toe contact flags;
+//   2. a continuous phase in [0, 1] across the stride (0 = heel strike), normalised against the
+//      measured stride period so it tracks cadence instead of drifting like a fixed timer.
 //
-// The two FSRs give four (heel, toe) contact combinations, one per phase, so the discrete state
-// is a direct decode of foot contact:
+// Two FSRs give four contact combinations, one per phase:
 //
-//   heel toe   phase
-//   ●    ○     LOADING          initial contact / weight acceptance (heel strike — phase 0)
-//   ●    ●     MID_STANCE       foot flat, body passes over the planted foot
+//   heel toe   state
+//   ●    ○     LOADING          heel strike / weight acceptance  (phase 0)
+//   ●    ●     MID_STANCE       foot flat, body passing over
 //   ○    ●     TERMINAL_STANCE  heel lifted, pushing off
-//   ○    ○     SWING            foot airborne
+//   ○    ○     SWING            airborne
 //
-// The stride's phase-0 reference is initial ground contact after swing (SWING → any stance);
-// toe-off is the return to SWING. FSR-only: the heel/toe contact flags are the sole input. The
-// push-off transition used to also gate on hip-joint velocity (motor_vel_*) to reject slow
-// weight-shifts, but that made the FSM impossible to exercise without real thigh motion, so it
-// was removed — contact alone drives it.
+// Phase 0 is the first ground contact after swing; toe-off is the return to SWING. Push-off used
+// to also gate on hip velocity, but that made the FSM untestable without real thigh motion.
 
 enum class GaitState : uint8_t {
-    LOADING         = 0,   // heel on,  toe off — initial contact / weight acceptance
-    MID_STANCE      = 1,   // heel on,  toe on  — foot flat, body passing over the foot
-    TERMINAL_STANCE = 2,   // heel off, toe on  — heel lifted, pushing off
-    SWING           = 3,   // heel off, toe off — foot airborne
+    LOADING         = 0,   // heel on,  toe off
+    MID_STANCE      = 1,   // heel on,  toe on
+    TERMINAL_STANCE = 2,   // heel off, toe on
+    SWING           = 3,   // heel off, toe off
 };
 
 class GaitFSM {
     public:
         // Constructor
         // ----------------------------------------------------------------------------------------
-        // name : label prefix used in Serial / Teleplot output   (e.g. "left", "right")
-        // dt   : sample period in seconds — MUST match the rate update() is called at (0.01 = 100 Hz)
+        // name : label for Serial / Teleplot output ("left", "right")
+        // dt   : sample period in seconds — must match how often update() is called
         GaitFSM(String name, float dt = 0.01f);
 
         // Public Methods
         // ----------------------------------------------------------------------------------------
-        // Call once per sensor cycle, after the FSR reads.
-        //   heel_contact / toe_contact : debounced FSR contact flags for THIS leg
-        // FSR-only: the foot contact flags are the sole input driving the state machine.
+        // Call once per sensor cycle with this leg's debounced contact flags.
         void update(bool heel_contact, bool toe_contact);
 
-        // Continuous gait phase over the full stride: 0.0 at heel strike → 1.0 at the next.
-        // This is the primary signal for the assistive controller.
+        // Stride phase: 0.0 at heel strike → 1.0 at the next one.
         float phase() const { return _phase; }
 
         GaitState state() const { return _state; }
 
-        // Estimated progress through the CURRENT swing, from cadence: time since toe-off divided by
-        // the expected swing duration (SWING_FRACTION × measured stride). ~0 just after toe-off,
-        // ~0.5–0.6 near peak-flexion reversal, →1.0 at the estimated heel strike. Only meaningful
-        // while state() == SWING; the FSRs are blind mid-air, so this timer is the only swing signal.
+        // How far through the current swing we are, estimated from cadence: time since toe-off
+        // over the expected swing duration. ~0.5–0.6 at peak flexion, →1.0 at the estimated heel
+        // strike. Only meaningful in SWING, and only an estimate — the FSRs are blind mid-air.
+        // No longer drives torque (the swing push-down was removed); kept for logging.
         float swingProgress() const {
             float expected = Config::Gait::SWING_FRACTION * _stride_period;
             return (expected > 1e-3f) ? (_t_in_swing / expected) : 0.0f;
         }
 
-        // Measured stride period in seconds (EMA-smoothed). Falls back to NOMINAL_STRIDE_S
-        // until the first full stride has been observed.
+        // Measured stride period (EMA), seconds. NOMINAL_STRIDE_S until the first full stride.
         float stridePeriod() const { return _stride_period; }
 
-        // Edge events — true for exactly one cycle after they occur.
-        bool heelStrike() const { return _heel_strike; }   // SWING → stance (initial contact)
-        bool toeOff()     const { return _toe_off; }        // stance → SWING (foot airborne)
+        // Edge events — true for exactly one cycle.
+        bool heelStrike() const { return _heel_strike; }   // SWING → stance
+        bool toeOff()     const { return _toe_off; }       // stance → SWING
 
-        // Gait sync — true only while the state sequence looks like a real stride. It is SET by a
-        // plausible heel-first initial contact (SWING → LOADING / MID_STANCE) and CLEARED by the one
-        // sensor-fault signature: TERMINAL_STANCE (which drives the largest push-off torque) reached
-        // straight from SWING — a toe-only contact from mid-air (false toe FSR) with no preceding
-        // heel load. Note the foot need NOT pass through every prior state: a fast heel-to-toe roll
-        // can skip MID_STANCE (foot-flat never registers on both FSRs at once), so
-        // LOADING → TERMINAL_STANCE stays synced. SAFETY: the controller must withhold assist while
-        // this is false, so a faulty FSR cannot command an unexpected torque. Starts false (no assist
-        // until a real heel strike is seen), and re-arms on the next clean heel strike.
+        // True while the state sequence looks like a real stride. Set by a heel-first contact,
+        // cleared by the one fault signature: TERMINAL_STANCE straight out of SWING, i.e. a
+        // toe-only contact from mid-air with no heel load first. A fast heel-to-toe roll can skip
+        // MID_STANCE, so LOADING → TERMINAL_STANCE is legal and stays synced.
+        // Safety: the controller must withhold assist while this is false, so a faulty FSR can't
+        // command torque. Starts false and re-arms on the next clean heel strike.
         bool synced() const { return _synced; }
 
-        // Activity watchdog. True only while gait edge events keep arriving; goes false once no
-        // heel strike / toe off has occurred for IDLE_TIMEOUT_STRIDES × the measured stride period
-        // — i.e. the wearer has stopped walking, the foot is off the ground, or the FSRs never fire
-        // (bench). Scaling by the stride keeps the cutoff quick at normal cadence without tripping a
-        // slow walker. SAFETY-CRITICAL: the controller must command ZERO assist whenever this is
-        // false, else the free-running phase clock keeps issuing torque and spins an unloaded joint.
+        // True while gait edge events keep arriving; false once nothing has happened for
+        // IDLE_TIMEOUT_STRIDES stride periods — wearer stopped, foot in the air, or bench.
+        // Safety: the controller must command zero assist when this is false, otherwise the
+        // free-running phase clock keeps issuing torque into an unloaded joint.
         bool walking() const {
             return _t_since_event < Config::Gait::IDLE_TIMEOUT_STRIDES * _stride_period;
         }
@@ -104,23 +89,23 @@ class GaitFSM {
         String    _name;
         float     _dt;
 
-        GaitState _state         = GaitState::MID_STANCE;   // both FSRs loaded — safe standing default
+        GaitState _state         = GaitState::MID_STANCE;   // both feet loaded = safe default
         float     _phase         = 0.0f;    // [0, 1] over the stride
-        float     _t_in_stride   = 0.0f;    // seconds elapsed since the last heel strike
-        float     _t_in_swing    = 0.0f;    // seconds elapsed since the last toe-off (swing timer)
-        float     _t_since_event = 1e6f;    // seconds since the last edge event (starts "idle")
-        float     _stride_period = 0.0f;    // EMA-smoothed stride time, seconds
+        float     _t_in_stride   = 0.0f;    // s since the last heel strike
+        float     _t_in_swing    = 0.0f;    // s since the last toe-off
+        float     _t_since_event = 1e6f;    // s since the last edge event (starts idle)
+        float     _stride_period = 0.0f;    // EMA stride time, s
 
         bool      _heel_strike   = false;   // one-cycle event flags
         bool      _toe_off       = false;
         bool      _primed        = false;   // false until the first update() adopts the real
-                                            // contact state (suppresses a phantom boot edge event)
-        bool      _synced        = false;   // false until a plausible heel strike; gates assist
+                                            // contact state (kills a phantom boot event)
+        bool      _synced        = false;   // gates assist, see synced()
 
         // Helper Functions
         // ----------------------------------------------------------------------------------------
-        // Register a completed stride: update the smoothed period and restart the phase clock.
+        // Close out a stride: fold the measured time into the EMA, restart the phase clock.
         void _closeStride();
 
-        // Tuning constants live in Config.h → Config::Gait (stride window, EMA).
+        // Tuning lives in Config.h → Config::Gait.
 };

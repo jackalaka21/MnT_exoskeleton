@@ -12,64 +12,48 @@
 #include "Controller.h"
 #include "FallDetector.h"
 
-// Forward declarations 
-// -------------------------------------------------------------------------------------------
-void ESTOP_ISR();
-
-// Global Peripherals Objects
+// Global Peripheral Objects
 // -------------------------------------------------------------------------------------------
 
-// IMUs Objects — two hip IMUs (redundant, fused in sensorTask)
+// Two hip IMUs (redundant pair, fused in sensorTask)
 IMU imu_hip1("Hip IMU 1", IMU1_address, I2C_Bus);
 IMU imu_hip2("Hip IMU 2", IMU2_address, I2C_Bus);
 
-// Madgwick Filter Object (β and rate from Config; sampleHz must match sensorTask rate)
+// Madgwick filters — sampleHz must match the sensorTask rate
 MadgwickFilter madgwick_hip1("hip1", Config::Imu::MADGWICK_BETA, Config::Rates::SENSOR_HZ);
 MadgwickFilter madgwick_hip2("hip2", Config::Imu::MADGWICK_BETA, Config::Rates::SENSOR_HZ);
 
-// FSR Objects — last arg is the per-sensor sensitivity gain (Config::FSR::*_GAIN) so each
-// of the four FSRs can be matched independently despite differing sensitivity.
+// FSRs — last arg is the per-sensor gain, so each of the four can be matched independently
 FSR fsr_left_heel ("Left Heel FSR",  LEFT_HEEL_FSR_PIN,  Config::FSR::THRESHOLD,     Config::FSR::EMA_ALPHA, Config::FSR::LEFT_HEEL_GAIN);
 FSR fsr_left_toe  ("Left Toe FSR",   LEFT_TOE_FSR_PIN,   Config::FSR::TOE_THRESHOLD, Config::FSR::EMA_ALPHA, Config::FSR::LEFT_TOE_GAIN);
 FSR fsr_right_heel("Right Heel FSR", RIGHT_HEEL_FSR_PIN, Config::FSR::THRESHOLD,     Config::FSR::EMA_ALPHA, Config::FSR::RIGHT_HEEL_GAIN);
 FSR fsr_right_toe ("Right Toe FSR",  RIGHT_TOE_FSR_PIN,  Config::FSR::TOE_THRESHOLD, Config::FSR::EMA_ALPHA, Config::FSR::RIGHT_TOE_GAIN);
 
-// Motor CAN bus — SimpleFOC CANCommander protocol to the MKS XDrive Mini drives
+// CAN bus to the MKS XDrive Mini drives (SimpleFOC CANCommander protocol)
 MotorCAN motor_can("Motor CAN", MOTOR_NODE_L, MOTOR_NODE_R);
 
-// Assistive gait controller — owns the per-leg gait estimation and torque command
+// Gait estimation + torque commands for both legs
 Controller controller(motor_can);
 
-// Fall detector — watches the fused pelvis pitch for a sudden topple / large tilt
+// Watches the fused pelvis pitch for a topple
 FallDetector fall_detector(Config::Rates::SENSOR_DT);
 
-// Handle so safetyTask can suspend the control loop before disabling the motors
+// Lets safetyTask stop the control loop before killing the motors
 static TaskHandle_t control_task_handle = nullptr;
 
 
-//  Peripheral Initialization Functions
+// Peripheral Initialization
 // -------------------------------------------------------------------------------------------
-
-// Initiate Serial Monitor
 static void initSerial() {
     Serial.begin(115200);
 }
 
-// Setup E-Stop Button and ISR
-static void initEStop() {
-    pinMode(PIN_ESTOP, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(PIN_ESTOP), ESTOP_ISR, FALLING);
-    NVIC_SET_PRIORITY(IRQ_GPIO6789, 0); // Set GPIO interrupt to highest priority (0)
-}
-
-// Initiate IMU Objects
 static void initIMUs() {
     I2C_Bus->begin();
     imu_hip1.init();
     imu_hip2.init();
 }
 
-// Initiate FSR Objects 
 static void initFSRs() {
     fsr_left_heel.init();
     fsr_left_toe.init();
@@ -77,34 +61,29 @@ static void initFSRs() {
     fsr_right_toe.init();
 }
 
-// Initiate Motor CAN bus — bring up CAN2, then configure both drives. All-or-nothing: if either
-// drive is missing, MotorCAN::startup() leaves both disabled (armed() stays false).
+// Bring up CAN2, then both drives. All or nothing: if either drive is missing, startup() leaves
+// both disabled and armed() stays false.
 static void initMotorDriver() {
     motor_can.init(MOTOR_CAN_BAUD);
     motor_can.startup();
 }
 
-//  E-stop ISR
-// -------------------------------------------------------------------------------------------
-void ESTOP_ISR() {
-    estop_triggered = true;
-}
 
-// FreeRTOS Scheduled Tasks
+// FreeRTOS Tasks
 // -------------------------------------------------------------------------------------------
 // ──────────────────────────────────────────────
-//  safetyTask — 1 kHz, priority 10 (highest)
-//  Clamp and estop check.
-//  Preempts all other tasks within next 1 ms tick.
+//  safetyTask — 1 kHz, priority 9 (highest)
+//  Watches for a detected fall; preempts everything else within a tick.
 // ──────────────────────────────────────────────
-// Drop the exo into its safe state and stay there. Stops the control loop first so it can't
-// send another torque command, then disables the drives. Never returns — a FreeRTOS task must
-// not fall off the end, so it spins with a fast LED blink to flag the fault.
+
+// Drop into the safe state and stay there. Stops the control loop first so it can't send another
+// torque command, then disables the drives. Never returns — a FreeRTOS task must not fall off the
+// end, so it spins with a fast LED blink.
 static void enterSafeState() {
     if (control_task_handle != nullptr) vTaskSuspend(control_task_handle);
     motor_can.disableAll();
     for (;;) {
-        digitalToggle(LED_BUILTIN);        // fast blink = latched fault (E-stop or fall)
+        digitalToggle(LED_BUILTIN);        // fast blink = latched fault
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -114,17 +93,14 @@ static void safetyTask(void* /*pvParams*/) {
     uint16_t led_timer = 0;
 
     for (;;) {
-        // LED heartbeat — 1 Hz toggle so we can confirm the scheduler is running
-        // independently of Serial. Visible immediately if safetyTask dispatches.
+        // 1 Hz heartbeat — confirms the scheduler is running without needing Serial.
         if (++led_timer >= 500) {
             led_timer = 0;
             digitalToggle(LED_BUILTIN);
-    }
+        }
 
-        // Safe-state triggers — E-stop button or a detected fall. Either one latches the exo
-        // into the safe state (enterSafeState never returns), so the control loop is stopped and
-        // the drives disabled until the device is power-cycled.
-        if (estop_triggered || fall_detected) {
+        // Latches the exo down until it's power-cycled (enterSafeState never returns).
+        if (fall_detected) {
             enterSafeState();
         }
 
@@ -134,7 +110,7 @@ static void safetyTask(void* /*pvParams*/) {
 
 // ──────────────────────────────────────────────
 //  controlTask — 100 Hz, priority 7
-//  Reads motor feedback and commands each leg's assistive torque (via the Controller).
+//  Reads motor feedback and commands each leg's assistive torque.
 // ──────────────────────────────────────────────
 static void controlTask(void* /*pvParams*/) {
     TickType_t last_wake = xTaskGetTickCount();
@@ -147,30 +123,28 @@ static void controlTask(void* /*pvParams*/) {
 }
 
 // ──────────────────────────────────────────────
-//  sensorTask — 100 Hz, priority 6
-//  IMU read, ADS1115 FSR, encoder SPI, gait FSM update.
+//  sensorTask — 100 Hz, priority 5
+//  IMUs + Madgwick, fall detection, FSRs, gait update.
 // ──────────────────────────────────────────────
 static void sensorTask(void* /*pvParams*/) {
     TickType_t last_wake = xTaskGetTickCount();
 
-    I2C_Bus->begin();  // re-init LPI2C in task context; clears error state from scheduler startup
+    I2C_Bus->begin();   // re-init LPI2C in task context; clears errors left by scheduler startup
 
     for (;;) {
-
-        // IMU + Madgwick Filter — two hip IMUs run independently
+        // IMUs — the two run independently through their own filters
         imu_hip1.read(&imu_hip1_accel, &imu_hip1_gyro);
         madgwick_hip1.update(&imu_hip1_accel, &imu_hip1_gyro, &imu_hip1_quaternion, &imu_hip1_angle_y);
 
         imu_hip2.read(&imu_hip2_accel, &imu_hip2_gyro);
         madgwick_hip2.update(&imu_hip2_accel, &imu_hip2_gyro, &imu_hip2_quaternion, &imu_hip2_angle_y);
 
-        // Basic sensor fusion — average the two redundant pelvis IMUs (both on the sacrum,
-        // measuring the same pelvis pitch), so averaging halves uncorrelated noise.
+        // Both IMUs sit on the sacrum measuring the same pelvis pitch, so averaging them halves
+        // the uncorrelated noise.
         pelvis_pitch_y      = 0.5f * (imu_hip1_angle_y + imu_hip2_angle_y);
         pelvis_pitch_rate_y = 0.5f * (imu_hip1_gyro.y  + imu_hip2_gyro.y);
 
-        // Fall detection — a sudden large change in the fused pelvis pitch latches fall_detected,
-        // which safetyTask turns into a safe-state shutdown on its next 1 ms tick.
+        // A latched fall becomes a safe-state shutdown on safetyTask's next tick.
         if (fall_detector.update(pelvis_pitch_y)) fall_detected = true;
 
         // FSRs
@@ -179,7 +153,7 @@ static void sensorTask(void* /*pvParams*/) {
         fsr_right_heel.read(&fsr_right_heel_value, &fsr_right_heel_contact);
         fsr_right_toe.read(&fsr_right_toe_value, &fsr_right_toe_contact);
 
-        // Gait phase — the controller advances each leg's FSR-driven gait estimate.
+        // Gait phase for both legs
         controller.updateGaitPhase();
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10));
@@ -188,17 +162,15 @@ static void sensorTask(void* /*pvParams*/) {
 
 // ──────────────────────────────────────────────
 //  monitorTask — 10 Hz, priority 2
-//  Serial monitor for debugging. One block per cycle: an IMU line, then a LEFT and a RIGHT
-//  leg chunk, each grouping that leg's gait / motor / foot-FSR state so the two sides are
-//  easy to compare at a glance.
+//  Debug output: an IMU line, a CAN line, then one line per leg so the two sides line up.
 // ──────────────────────────────────────────────
 
-// Print one leg's chunk: gait state/phase, motor angle/vel/commanded torque, and both foot FSRs.
+// One leg: gait, motor, and both foot FSRs.
 static void printLeg(const char* label, uint8_t gait_state, float phase,
                      float angle, float vel, float tau,
                      uint8_t heel_val, bool heel_contact,
                      uint8_t toe_val,  bool toe_contact) {
-    // Padded to a fixed width so the columns line up between the LEFT and RIGHT lines.
+    // Padded so the LEFT and RIGHT columns line up.
     static const char* const GAIT_NAMES[] = { "LOADING   ", "MIDSTANCE ", "TERMSTANCE", "SWING     " };
 
     Serial.print(label);
@@ -217,11 +189,11 @@ static void monitorTask(void* /*pvParams*/) {
     TickType_t last_wake = xTaskGetTickCount();
 
     for (;;) {
-        // Plain Serial.print only — Serial.printf goes through newlib vdprintf,
-        // which is not safe from FreeRTOS tasks with this port (no newlib reentrancy).
+        // Serial.print only — Serial.printf goes through newlib vdprintf, which isn't safe from
+        // tasks on this port.
         Serial.println("=================== EXO STATE ===================");
 
-        // IMU chunk — the two hip IMUs and their fused pelvis pitch
+        // IMUs and the fused pelvis pitch
         Serial.print("IMU   | hip1 ");   Serial.print(imu_hip1_angle_y, 1);
         Serial.print(" deg  hip2 ");     Serial.print(imu_hip2_angle_y, 1);
         Serial.print(" deg | pelvis ");  Serial.print(pelvis_pitch_y, 1);
@@ -229,9 +201,8 @@ static void monitorTask(void* /*pvParams*/) {
         Serial.print(" rad/s | FALL ");  Serial.print(fall_detected ? "1" : "0");
         Serial.print(" | STANDING ");    Serial.println(standing_detected ? "1" : "0");
 
-        // CAN feedback freshness — ms since each drive last answered a READ. If a node's age keeps
-        // climbing it has stopped responding to reads; if it stays small but angle/vel read 0, the
-        // drive is answering but its position sensor is unconfigured/unmoving. (bench diagnostic)
+        // ms since each drive last answered a read. Climbing = it has stopped responding; small
+        // but with angle/vel stuck at 0 = it answers, but its position sensor isn't configured.
         uint32_t now = millis();
         Serial.print("CAN   | node ");   Serial.print(MOTOR_NODE_L);
         Serial.print(" (L) resp age ");  Serial.print(now - motor_can.lastResponseMs(MOTOR_NODE_L));
@@ -239,7 +210,6 @@ static void monitorTask(void* /*pvParams*/) {
         Serial.print(" (R) resp age ");  Serial.print(now - motor_can.lastResponseMs(MOTOR_NODE_R));
         Serial.println(" ms");
 
-        // One chunk per leg, aligned for easy left/right comparison
         printLeg("LEFT ", gait_state_L, gait_phase_L, motor_angle_L, motor_vel_L, tau_cmd_L,
                  fsr_left_heel_value,  fsr_left_heel_contact,  fsr_left_toe_value,  fsr_left_toe_contact);
         printLeg("RIGHT", gait_state_R, gait_phase_R, motor_angle_R, motor_vel_R, tau_cmd_R,
@@ -249,18 +219,15 @@ static void monitorTask(void* /*pvParams*/) {
     }
 }
 
-//  Setup / FreeRTOS Scheduler Start
+// Setup / Scheduler Start
 // -------------------------------------------------------------------------------------------
 void setup() {
-    // Peripheral Initialization
     initSerial();
-    initEStop();
     initIMUs();
     initFSRs();
     initMotorDriver();
 
-    // Create FreeRTOS tasks with appropriate stack sizes and priorities.
-    // configMAX_PRIORITIES = 10, so valid range is 0–9 (priority 10 is out of bounds).
+    // configMAX_PRIORITIES = 10, so priorities run 0–9.
     xTaskCreate(safetyTask,  "safety",  512,  nullptr, 9, nullptr);
     xTaskCreate(controlTask, "control", 2048, nullptr, 7, &control_task_handle);
     xTaskCreate(sensorTask,  "sensor",  2048, nullptr, 5, nullptr);
@@ -270,7 +237,6 @@ void setup() {
 }
 
 void loop() {
-    // Called by FreeRTOS idle task (via vApplicationIdleHook in FreeRTOS_TEENSY4.c).
-    // yield() kicks the Teensy hardware watchdog so the device doesn't reset.
+    // Runs from the FreeRTOS idle hook. yield() kicks the hardware watchdog so we don't reset.
     yield();
 }
